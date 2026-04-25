@@ -174,6 +174,29 @@ export default function SiteEditor() {
     };
   }, [site?.design?.fonts, site?.id]);
 
+  // Inject the site's customCss into the editor preview so what you see
+  // matches what the export ships to Kajabi. Two gotchas this handles:
+  //   1. Without this, customCss is ONLY applied at export time — the
+  //      editor preview renders without it, so overlays/tweaks look broken
+  //      in the editor even though the exported zip is correct.
+  //   2. The export DOM (Kajabi page wrapper) and the preview DOM
+  //      (`.preview-root > section...`) differ. Authors should write
+  //      preview-scoped selectors in customCss alongside export selectors,
+  //      e.g.:
+  //          section:first-of-type::before { ... }                  /* export */
+  //          .preview-root > section:first-of-type::before { ... }  /* preview */
+  useEffect(() => {
+    const css = site?.design?.customCss;
+    if (!css || typeof css !== 'string' || css.trim() === '') return;
+    const style = document.createElement('style');
+    style.textContent = css;
+    if (site?.id) style.dataset.previewCustomCss = site.id;
+    document.head.appendChild(style);
+    return () => {
+      style.remove();
+    };
+  }, [site?.design?.customCss, site?.id]);
+
   async function commitName() {
     if (!site) return;
     const trimmed = nameDraft.trim();
