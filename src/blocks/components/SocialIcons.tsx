@@ -18,6 +18,11 @@
  * for this block. Stick with `backgroundColor` = icon-button bg.
  */
 import type { BlockComponent } from '../types';
+import {
+  Facebook, Twitter, Instagram, Youtube, Linkedin, Github,
+  Music2, Music, Video, BookOpen, Mail,
+} from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 
 export interface SocialIconsProps {
   // Per-platform URLs — exported as social_icon_link_<platform>
@@ -43,43 +48,52 @@ export interface SocialIconsProps {
   /** Preview-only alignment */
   align?: 'left' | 'center' | 'right';
   iconColor?: string;
+  /** Optional email — rendered as a mail icon, exported via Kajabi field if present */
+  email?: string;
 }
 
-const ICON_LABELS: Record<string, string> = {
-  facebook: 'fb', twitter: 'tw', instagram: 'ig',
-  youtube: 'yt', linkedin: 'in', tiktok: 'tt', pinterest: 'pn',
-  vimeo: 'vm', github: 'gh', medium: 'md', spotify: 'sp', soundcloud: 'sc',
+const ICONS: Record<string, LucideIcon> = {
+  facebook: Facebook,
+  twitter: Twitter,
+  instagram: Instagram,
+  youtube: Youtube,
+  linkedin: Linkedin,
+  tiktok: Music2,
+  pinterest: Video,
+  vimeo: Video,
+  github: Github,
+  medium: BookOpen,
+  spotify: Music,
+  soundcloud: Music,
+  email: Mail,
 };
 
-const SIZE_PX: Record<string, number> = { small: 22, medium: 28, large: 36 };
-
-const DEFAULT_URLS: Record<string, string> = {
-  twitter: 'https://twitter.com/',
-  instagram: 'https://instagram.com/',
-  linkedin: 'https://linkedin.com/',
-  youtube: 'https://youtube.com/',
-};
+const SIZE_PX: Record<string, number> = { small: 28, medium: 38, large: 48 };
+const ICON_PX: Record<string, number> = { small: 14, medium: 18, large: 22 };
 
 const ALL_PLATFORMS = [
   'facebook', 'twitter', 'instagram', 'youtube', 'linkedin', 'tiktok',
-  'pinterest', 'vimeo', 'github', 'medium', 'spotify', 'soundcloud',
+  'pinterest', 'vimeo', 'github', 'medium', 'spotify', 'soundcloud', 'email',
 ] as const;
 
 function resolveUrl(props: SocialIconsProps, platform: string): string {
   const explicit = (props as Record<string, unknown>)[platform];
-  if (typeof explicit === 'string') return explicit;
-  return DEFAULT_URLS[platform] ?? '';
+  return typeof explicit === 'string' ? explicit.trim() : '';
 }
 
 export const SocialIcons: BlockComponent<SocialIconsProps> = (props) => {
   const align = props.align ?? 'center';
-  const sizePx = SIZE_PX[props.size ?? 'medium'];
+  const sizeKey = props.size ?? 'medium';
+  const boxPx = SIZE_PX[sizeKey];
+  const iconPx = ICON_PX[sizeKey];
   const bgStyle = props.backgroundStyle ?? 'circle';
   return (
     <div style={{ textAlign: align, padding: '8px 0' }}>
       {ALL_PLATFORMS.map((p) => {
         const url = resolveUrl(props, p);
         if (!url) return null;
+        const Icon = ICONS[p];
+        if (!Icon) return null;
         return (
           <a
             key={p}
@@ -87,21 +101,19 @@ export const SocialIcons: BlockComponent<SocialIconsProps> = (props) => {
             target={props.newTab !== false ? '_blank' : undefined}
             rel={props.newTab !== false ? 'noopener' : undefined}
             style={{
-              display: 'inline-block',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
               margin: '0 6px',
-              padding: 6,
-              color: props.iconColor || '#666',
-              backgroundColor: bgStyle === 'none' ? 'transparent' : (props.backgroundColor || 'rgba(255,255,255,0.1)'),
+              color: props.iconColor || '#7A8471',
+              backgroundColor: bgStyle === 'none' ? 'transparent' : (props.backgroundColor || '#E5E7EB'),
               border: bgStyle === 'none' ? '1px solid currentColor' : 'none',
               borderRadius: bgStyle === 'circle' ? '50%' : bgStyle === 'square' ? 4 : 0,
-              width: sizePx, height: sizePx,
-              fontSize: 11,
-              textAlign: 'center',
-              lineHeight: `${sizePx - 12}px`,
+              width: boxPx, height: boxPx,
               textDecoration: 'none',
             }}
           >
-            {ICON_LABELS[p] ?? p.slice(0, 2)}
+            <Icon size={iconPx} strokeWidth={1.75} />
           </a>
         );
       })}
@@ -120,7 +132,12 @@ SocialIcons.serialize = (p) => {
   };
   for (const platform of ALL_PLATFORMS) {
     const url = resolveUrl(p, platform);
-    if (url) out[`social_icon_link_${platform}`] = url;
+    if (!url) continue;
+    if (platform === 'email') {
+      out['social_icon_link_email'] = url.startsWith('mailto:') ? url : `mailto:${url}`;
+    } else {
+      out[`social_icon_link_${platform}`] = url;
+    }
   }
   return out;
 };
