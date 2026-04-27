@@ -129,7 +129,7 @@ function wrapContentChildren(children: ReactNode): ReactNode {
 
   return (
     <div
-      className="row"
+      className="row font-thin"
       style={{
         display: 'flex',
         flexWrap: 'wrap',
