@@ -161,12 +161,39 @@ const FOOTER_ALLOWED = new Set(['logo', 'link_list', 'copyright', 'social_icons'
 
 function buildSectionStyle(props: SectionLayoutProps): CSSProperties {
   const style: CSSProperties = {};
-  if (props.background) style.backgroundColor = props.background;
-  if (props.backgroundImage) {
-    style.backgroundImage = `url(${props.backgroundImage})`;
+  // Kajabi parity for image+color sections (AGENTS.md §4.6):
+  //   In Kajabi's section.liquid, when bg_type === 'image', the section
+  //   renders the image as one layer and the `background_color` as a
+  //   SEPARATE OVERLAY DIV painted ON TOP of the image. So an opaque
+  //   color completely hides the image — that's the whole point of the
+  //   "use rgba with a<1 or empty string" rule.
+  //
+  //   Naïve CSS (`background-color` + `background-image` on the same
+  //   element) layers them the OPPOSITE way — the image always paints
+  //   on top of the color — which makes opaque-color-over-image bugs
+  //   invisible in the editor preview but obvious after Kajabi export.
+  //
+  //   To match Kajabi, when BOTH are set we stack the color as a tinted
+  //   gradient layer ABOVE the image inside `background-image`. Now an
+  //   opaque `#000000` covers the image in the editor too, and authors
+  //   (or the AI) catch the bug before exporting.
+  const hasImage = typeof props.backgroundImage === 'string' && props.backgroundImage.length > 0;
+  if (hasImage) {
+    const layers: string[] = [];
+    if (props.background) {
+      // A solid-color "gradient" (same color top + bottom) acts as an
+      // opaque overlay layer. rgba(...,a<1) authors get a real tint;
+      // opaque hex/rgb authors get a full cover — same as Kajabi.
+      layers.push(`linear-gradient(${props.background}, ${props.background})`);
+    }
+    layers.push(`url(${props.backgroundImage})`);
+    style.backgroundImage = layers.join(', ');
     style.backgroundSize = 'cover';
     style.backgroundPosition = props.bgPosition ?? 'center';
     if (props.backgroundFixed) style.backgroundAttachment = 'fixed';
+  } else if (props.background) {
+    // No image — color renders normally.
+    style.backgroundColor = props.background;
   }
   if (props.textColor) style.color = props.textColor;
 
