@@ -26,15 +26,26 @@ export interface BaseThemeDiagnostic {
 
 // ─── Constants ─────────────────────────────────────────────
 
-export type BaseTheme = 'streamlined-home' | 'encore-page';
-export const DEFAULT_BASE_THEME: BaseTheme = 'streamlined-home';
+export type BaseThemeName =
+  | 'streamlined-home'
+  | 'streamlined-home-pro'
+  | 'encore-page'
+  | 'encore-page-pro';
 
-const BASE_THEME_URLS: Record<BaseTheme, string> = {
+const BASE_THEME_URLS: Record<BaseThemeName, string> = {
   'streamlined-home': '/base-theme/streamlined-home.zip',
-  'encore-page': '/base-theme/encore-landing-page.zip',
+  'streamlined-home-pro': '/base-theme/streamlined-home-pro.zip',
+  'encore-page': '/base-theme/encore-page.zip',
+  'encore-page-pro': '/base-theme/encore-page-pro.zip',
 };
 
-const REQUIRED_FOLDERS = ['config', 'layouts', 'templates', 'sections'];
+const REQUIRED_FOLDERS_BY_THEME: Record<BaseThemeName, string[]> = {
+  'streamlined-home': ['config', 'layouts', 'templates', 'sections'],
+  'streamlined-home-pro': ['config', 'layouts', 'templates', 'sections'],
+  'encore-page': ['config', 'templates', 'sections', 'snippets'],
+  'encore-page-pro': ['config', 'templates', 'sections', 'snippets'],
+};
+
 const REQUIRED_FILES = ['config/settings_data.json'];
 const EXPECTED_FOLDERS = ['snippets', 'assets'];
 
@@ -43,30 +54,26 @@ function isJunkFile(path: string): boolean {
   return JUNK_PATTERNS.some(p => path.includes(p)) || path.startsWith('._');
 }
 
-// ─── Per-theme Cache ───────────────────────────────────────
+const cachedValidationByTheme = new Map<BaseThemeName, BaseThemeValidation>();
+const cachedZipByTheme = new Map<BaseThemeName, JSZip>();
 
-const cachedValidations = new Map<BaseTheme, BaseThemeValidation>();
-const cachedZips = new Map<BaseTheme, JSZip>();
-
-export function getCachedValidation(theme: BaseTheme = DEFAULT_BASE_THEME): BaseThemeValidation | null {
-  return cachedValidations.get(theme) ?? null;
+export function getCachedValidation(theme: BaseThemeName = 'streamlined-home'): BaseThemeValidation | null {
+  return cachedValidationByTheme.get(theme) ?? null;
 }
 
-export function getCachedZip(theme: BaseTheme = DEFAULT_BASE_THEME): JSZip | null {
-  return cachedZips.get(theme) ?? null;
+export function getCachedZip(theme: BaseThemeName = 'streamlined-home'): JSZip | null {
+  return cachedZipByTheme.get(theme) ?? null;
 }
 
-export function clearCache(theme?: BaseTheme): void {
+export function clearCache(theme?: BaseThemeName): void {
   if (theme) {
-    cachedValidations.delete(theme);
-    cachedZips.delete(theme);
+    cachedValidationByTheme.delete(theme);
+    cachedZipByTheme.delete(theme);
   } else {
-    cachedValidations.clear();
-    cachedZips.clear();
+    cachedValidationByTheme.clear();
+    cachedZipByTheme.clear();
   }
 }
-
-// ─── Detection ─────────────────────────────────────────────
 
 function detectTopLevelFolder(zip: JSZip): string | null {
   const topLevel = new Set<string>();
@@ -84,49 +91,38 @@ function detectTopLevelFolder(zip: JSZip): string | null {
   return null;
 }
 
-// ─── Validation ────────────────────────────────────────────
-
-/**
- * Validate the base theme zip. Fetches it, parses it, checks structure.
- * Caches the result so subsequent calls are instant.
- */
 export async function validateBaseTheme(
-  themeOrForce: BaseTheme | boolean = DEFAULT_BASE_THEME,
-  forceRefresh = false,
+  themeOrForce: BaseThemeName | boolean = 'streamlined-home',
+  forceRefreshArg = false,
 ): Promise<BaseThemeValidation> {
-  // Backwards compat: validateBaseTheme(true) === force refresh of default theme
-  let theme: BaseTheme;
-  let force: boolean;
+  let theme: BaseThemeName;
+  let forceRefresh: boolean;
   if (typeof themeOrForce === 'boolean') {
-    theme = DEFAULT_BASE_THEME;
-    force = themeOrForce;
+    theme = 'streamlined-home';
+    forceRefresh = themeOrForce;
   } else {
     theme = themeOrForce;
-    force = forceRefresh;
+    forceRefresh = forceRefreshArg;
   }
 
-  const existing = cachedValidations.get(theme);
-  if (existing && !force) return existing;
+  const cached = cachedValidationByTheme.get(theme);
+  if (cached && !forceRefresh) return cached;
 
-  const themeUrl = BASE_THEME_URLS[theme];
+  const url = BASE_THEME_URLS[theme];
+  const requiredFolders = REQUIRED_FOLDERS_BY_THEME[theme];
   const diagnostics: BaseThemeDiagnostic[] = [];
 
-  // 1. Fetch the zip
   let resp: Response;
   try {
-    resp = await fetch(themeUrl);
+    resp = await fetch(url);
   } catch (e) {
     const result: BaseThemeValidation = {
       health: 'missing',
       rootPrefix: null,
-      diagnostics: [{
-        level: 'error',
-        code: 'FETCH_FAILED',
-        message: `Cannot reach base theme at ${themeUrl}: ${e}`,
-      }],
+      diagnostics: [{ level: 'error', code: 'FETCH_FAILED', message: `Cannot reach base theme at ${url}: ${e}` }],
       checkedAt: new Date().toISOString(),
     };
-    cachedValidations.set(theme, result);
+    cachedValidationByTheme.set(theme, result);
     return result;
   }
 
@@ -134,18 +130,13 @@ export async function validateBaseTheme(
     const result: BaseThemeValidation = {
       health: 'missing',
       rootPrefix: null,
-      diagnostics: [{
-        level: 'error',
-        code: 'HTTP_ERROR',
-        message: `Base theme returned HTTP ${resp.status} ${resp.statusText}`,
-      }],
+      diagnostics: [{ level: 'error', code: 'HTTP_ERROR', message: `Base theme returned HTTP ${resp.status} ${resp.statusText}` }],
       checkedAt: new Date().toISOString(),
     };
-    cachedValidations.set(theme, result);
+    cachedValidationByTheme.set(theme, result);
     return result;
   }
 
-  // 2. Parse the zip
   let zip: JSZip;
   try {
     const buf = await resp.arrayBuffer();
@@ -154,66 +145,41 @@ export async function validateBaseTheme(
     const result: BaseThemeValidation = {
       health: 'invalid',
       rootPrefix: null,
-      diagnostics: [{
-        level: 'error',
-        code: 'ZIP_PARSE_FAILED',
-        message: `Base theme is not a valid zip file: ${e}`,
-      }],
+      diagnostics: [{ level: 'error', code: 'ZIP_PARSE_FAILED', message: `Base theme is not a valid zip file: ${e}` }],
       checkedAt: new Date().toISOString(),
     };
-    cachedValidations.set(theme, result);
+    cachedValidationByTheme.set(theme, result);
     return result;
   }
 
-  // 3. Detect root folder
   const rootPrefix = detectTopLevelFolder(zip) || '';
   if (!rootPrefix) {
-    diagnostics.push({
-      level: 'warning',
-      code: 'NO_ROOT_FOLDER',
-      message: `No single top-level folder detected. Expected a folder like ${theme}/.`,
-    });
+    diagnostics.push({ level: 'warning', code: 'NO_ROOT_FOLDER', message: `No single top-level folder detected. Expected a folder like ${theme}/.` });
   }
 
-  // 4. Check required folders
-  for (const folder of REQUIRED_FOLDERS) {
+  for (const folder of requiredFolders) {
     const fullPath = rootPrefix + folder + '/';
     const hasFolder = Object.keys(zip.files).some(f => f.startsWith(fullPath));
     if (!hasFolder) {
-      diagnostics.push({
-        level: 'error',
-        code: 'MISSING_REQUIRED_FOLDER',
-        message: `Missing required folder: ${folder}/`,
-      });
+      diagnostics.push({ level: 'error', code: 'MISSING_REQUIRED_FOLDER', message: `Missing required folder: ${folder}/` });
     }
   }
 
-  // 5. Check required files
   for (const file of REQUIRED_FILES) {
     const fullPath = rootPrefix + file;
     if (!zip.files[fullPath]) {
-      diagnostics.push({
-        level: 'error',
-        code: 'MISSING_REQUIRED_FILE',
-        message: `Missing required file: ${file}`,
-      });
+      diagnostics.push({ level: 'error', code: 'MISSING_REQUIRED_FILE', message: `Missing required file: ${file}` });
     }
   }
 
-  // 6. Check expected (non-blocking) folders
   for (const folder of EXPECTED_FOLDERS) {
     const fullPath = rootPrefix + folder + '/';
     const hasFolder = Object.keys(zip.files).some(f => f.startsWith(fullPath));
     if (!hasFolder) {
-      diagnostics.push({
-        level: 'warning',
-        code: 'MISSING_EXPECTED_FOLDER',
-        message: `Expected folder not found: ${folder}/ (non-blocking)`,
-      });
+      diagnostics.push({ level: 'warning', code: 'MISSING_EXPECTED_FOLDER', message: `Expected folder not found: ${folder}/ (non-blocking)` });
     }
   }
 
-  // 7. Validate settings_data.json is parseable
   const settingsPath = rootPrefix + 'config/settings_data.json';
   const settingsFile = zip.files[settingsPath];
   if (settingsFile) {
@@ -221,51 +187,24 @@ export async function validateBaseTheme(
       const text = await settingsFile.async('text');
       const parsed = JSON.parse(text);
       if (!parsed.current) {
-        diagnostics.push({
-          level: 'warning',
-          code: 'SETTINGS_NO_CURRENT',
-          message: 'settings_data.json has no "current" key',
-        });
+        diagnostics.push({ level: 'warning', code: 'SETTINGS_NO_CURRENT', message: 'settings_data.json has no "current" key' });
       }
-      diagnostics.push({
-        level: 'info',
-        code: 'SETTINGS_OK',
-        message: 'settings_data.json is valid JSON with expected structure',
-      });
+      diagnostics.push({ level: 'info', code: 'SETTINGS_OK', message: 'settings_data.json is valid JSON with expected structure' });
     } catch (e) {
-      diagnostics.push({
-        level: 'error',
-        code: 'SETTINGS_INVALID_JSON',
-        message: `settings_data.json is not valid JSON: ${e}`,
-      });
+      diagnostics.push({ level: 'error', code: 'SETTINGS_INVALID_JSON', message: `settings_data.json is not valid JSON: ${e}` });
     }
   }
 
-  // 8. Check for junk files
   let junkCount = 0;
-  zip.forEach((path) => {
-    if (isJunkFile(path)) junkCount++;
-  });
+  zip.forEach((path) => { if (isJunkFile(path)) junkCount++; });
   if (junkCount > 0) {
-    diagnostics.push({
-      level: 'warning',
-      code: 'JUNK_FILES',
-      message: `Found ${junkCount} junk file(s) (__MACOSX, .DS_Store, etc.)`,
-    });
+    diagnostics.push({ level: 'warning', code: 'JUNK_FILES', message: `Found ${junkCount} junk file(s) (__MACOSX, .DS_Store, etc.)` });
   }
 
-  // 9. Count real files
   let fileCount = 0;
-  zip.forEach((path, file) => {
-    if (!file.dir && !isJunkFile(path)) fileCount++;
-  });
-  diagnostics.push({
-    level: 'info',
-    code: 'FILE_COUNT',
-    message: `Base theme contains ${fileCount} file(s)`,
-  });
+  zip.forEach((path, file) => { if (!file.dir && !isJunkFile(path)) fileCount++; });
+  diagnostics.push({ level: 'info', code: 'FILE_COUNT', message: `Base theme contains ${fileCount} file(s)` });
 
-  // Determine health
   const hasErrors = diagnostics.some(d => d.level === 'error');
   const health: BaseThemeHealth = hasErrors ? 'invalid' : 'ready';
 
@@ -276,21 +215,17 @@ export async function validateBaseTheme(
     checkedAt: new Date().toISOString(),
   };
 
-  cachedValidations.set(theme, result);
-  cachedZips.set(theme, zip);
+  cachedValidationByTheme.set(theme, result);
+  cachedZipByTheme.set(theme, zip);
   return result;
 }
 
-// ─── Quick health check (non-blocking) ────────────────────
-
-/**
- * Returns the cached health or triggers a background check.
- * Never blocks — returns 'checking' if no cached result exists yet.
- */
-export function getBaseThemeHealth(theme: BaseTheme = DEFAULT_BASE_THEME): BaseThemeHealth {
-  const cached = cachedValidations.get(theme);
+export function getBaseThemeHealth(theme: BaseThemeName = 'streamlined-home'): BaseThemeHealth {
+  const cached = cachedValidationByTheme.get(theme);
   if (cached) return cached.health;
-  // Trigger background validation
   validateBaseTheme(theme).catch(() => {});
   return 'checking';
 }
+
+// Backwards-compat alias for older callers.
+export type BaseTheme = BaseThemeName;
