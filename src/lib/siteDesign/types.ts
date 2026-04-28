@@ -33,7 +33,7 @@ import type {
   ContentSectionProps,
   HeaderSectionProps,
   FooterSectionProps,
-} from '@/blocks/types';
+} from '@k-studio-pro/engine';
 
 /** Bumped when the JSON shape changes in a non-backwards-compatible way. */
 export const SITE_DESIGN_VERSION = 1 as const;

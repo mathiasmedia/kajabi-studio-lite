@@ -34,9 +34,9 @@ import {
   CustomCode,
   LinkList,
   Copyright,
-} from '@/blocks';
+  type PageTrees,
+} from '@k-studio-pro/engine';
 import type { SiteImage } from '@/lib/imageStore';
-import type { PageTrees } from '@/blocks';
 import type {
   SiteDesign,
   DesignPage,
