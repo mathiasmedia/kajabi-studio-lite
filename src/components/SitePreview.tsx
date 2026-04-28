@@ -20,6 +20,44 @@ import { resolvePreviewFonts } from '@/lib/siteDesign/resolvePreviewFonts';
 
 const RENDER_WIDTH = 1280;
 const RENDER_HEIGHT = 800;
+const AT_RULE_BLOCK_RE = /@(media|supports|container|layer)[^{]+\{[\s\S]*?\}\s*\}/g;
+const TOP_LEVEL_RULE_RE = /(^|\})\s*([^@{}][^{}]*)\{/g;
+
+function scopeSelectorList(selectorList: string, scope: string) {
+  return selectorList
+    .split(',')
+    .map((selector) => {
+      const trimmed = selector.trim();
+      if (!trimmed) return trimmed;
+      if (trimmed.startsWith(scope)) return trimmed;
+      if (/^(:root|html|body)\b/.test(trimmed)) {
+        return trimmed.replace(/^(:root|html|body)\b/, scope);
+      }
+      return `${scope} ${trimmed}`;
+    })
+    .join(', ');
+}
+
+function scopeCss(css: string, scope: string) {
+  const scopeTopLevelRules = (fragment: string) =>
+    fragment.replace(TOP_LEVEL_RULE_RE, (_match, brace, selectorList) => {
+      return `${brace} ${scopeSelectorList(selectorList, scope)} {`;
+    });
+
+  return scopeTopLevelRules(
+    css.replace(AT_RULE_BLOCK_RE, (block) => {
+      const openIndex = block.indexOf('{');
+      const closeIndex = block.lastIndexOf('}');
+      if (openIndex === -1 || closeIndex === -1 || closeIndex <= openIndex) return block;
+
+      const header = block.slice(0, openIndex + 1);
+      const inner = block.slice(openIndex + 1, closeIndex);
+      const footer = block.slice(closeIndex);
+
+      return `${header}${scopeTopLevelRules(inner)}${footer}`;
+    }),
+  );
+}
 
 export function SitePreview({ site }: { site: Site }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -53,22 +91,7 @@ export function SitePreview({ site }: { site: Site }) {
   const scopedCss = useMemo(() => {
     const css = site.design?.customCss;
     if (!css || typeof css !== 'string' || css.trim() === '') return '';
-    // Naive but effective scoper: prefix every selector in every rule.
-    // Skip @-rules' prelude (e.g. @media) but scope their inner selectors.
-    return css.replace(
-      /(^|\})\s*([^@{}][^{}]*)\{/g,
-      (_match, brace, selectorList) => {
-        const scoped = selectorList
-          .split(',')
-          .map((s: string) => {
-            const t = s.trim();
-            if (!t) return t;
-            return `.${scopeClass} ${t}`;
-          })
-          .join(', ');
-        return `${brace} ${scoped} {`;
-      },
-    );
+    return scopeCss(css, `.${scopeClass}`);
   }, [site.design?.customCss, scopeClass]);
 
   // Inject Google Fonts + family rules per-instance, scoped to this tile.
@@ -112,26 +135,12 @@ export function SitePreview({ site }: { site: Site }) {
       const style = document.createElement('style');
       style.dataset.thumbFonts = scopeClass;
       const scope = `.${scopeClass}`;
-      const scopeRules = (css: string) =>
-        css.replace(/(^|\})\s*([^{}@]+?)\s*\{/g, (_m, brace, sel) => {
-          const scoped = sel.split(',').map((s: string) => `${scope} ${s.trim()}`).join(', ');
-          return `${brace} ${scoped} {`;
-        });
-      const scopedOverrides = resolved.overrideCss
-        ? resolved.overrideCss.replace(/@media[^{]+\{[^}]+\}\s*\}/g, (block) =>
-            block.replace(/(\{[^@}]*?)([a-zA-Z][^{}]*?)\s*\{/g, (_m, pre, sel) => {
-              const scoped = sel.split(',').map((s: string) => `${scope} ${s.trim()}`).join(', ');
-              return `${pre} ${scoped} {`;
-            }),
-          )
-        : '';
-      const topLevel = resolved.overrideCss.replace(/@media[^{]+\{[^}]+\}\s*\}/g, '').trim();
+      const scopedOverrides = resolved.overrideCss ? scopeCss(resolved.overrideCss, scope) : '';
       style.textContent = [
         bodyStack ? `${scope}, ${scope} * { font-family: ${bodyStack}; }` : '',
         headingStack
           ? `${scope} :is(h1,h2,h3,h4,h5,h6), ${scope} :is(h1,h2,h3,h4,h5,h6) * { font-family: ${headingStack}; }`
           : '',
-        topLevel ? scopeRules(topLevel) : '',
         scopedOverrides,
       ]
         .filter(Boolean)

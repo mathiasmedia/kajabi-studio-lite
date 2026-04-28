@@ -17,6 +17,7 @@ import {
   enabledPageCount,
   slugify,
   type Site,
+  type BaseThemeId,
 } from '@/lib/siteStore';
 import { SitePreview } from '@/components/SitePreview';
 import { Button } from '@/components/ui/button';
@@ -191,16 +192,23 @@ export default function SitesDashboard() {
     };
   }, [isAdmin, websites, landingPages]);
 
-  async function handleCreateSite(name: string) {
-    const site = await createSite({ name, brandName: name });
+  async function handleCreateSite(
+    name: string,
+    baseTheme: Extract<BaseThemeId, 'streamlined-home' | 'streamlined-home-pro'>,
+  ) {
+    const site = await createSite({ name, brandName: name, baseTheme });
     if (!site) return;
     await refresh();
     setCreateMode(null);
     navigate(`/sites/${site.id}`);
   }
 
-  async function handleCreateLandingPage(name: string, slug: string) {
-    const page = await createLandingPage({ name, brandName: name, slug });
+  async function handleCreateLandingPage(
+    name: string,
+    slug: string,
+    baseTheme: Extract<BaseThemeId, 'encore-page' | 'encore-page-pro'>,
+  ) {
+    const page = await createLandingPage({ name, brandName: name, slug, baseTheme });
     if (!page) return;
     await refresh();
     setCreateMode(null);
@@ -580,7 +588,7 @@ function FirstRunEmptyState({
             <h3 className="font-semibold">Landing page</h3>
           </div>
           <p className="mt-2 text-sm text-muted-foreground">
-            Single page, one promise, one CTA. Custom URL slug.
+            Single page, one promise, one CTA. Custom URL slug. Encore-page theme.
           </p>
           <span className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-primary">
             <Plus className="h-3.5 w-3.5" /> New landing page
@@ -699,13 +707,22 @@ function CreateSiteDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreate: (name: string) => void;
+  onCreate: (
+    name: string,
+    baseTheme: Extract<BaseThemeId, 'streamlined-home' | 'streamlined-home-pro'>,
+  ) => void;
 }) {
   const [name, setName] = useState('');
+  const [tier, setTier] = useState<'standard' | 'pro'>('standard');
 
   useEffect(() => {
-    if (open) setName('');
+    if (open) {
+      setName('');
+      setTier('standard');
+    }
   }, [open]);
+
+  const baseTheme = tier === 'pro' ? 'streamlined-home-pro' : 'streamlined-home';
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -728,16 +745,17 @@ function CreateSiteDialog({
               value={name}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && name.trim()) onCreate(name.trim());
+                if (e.key === 'Enter' && name.trim()) onCreate(name.trim(), baseTheme);
               }}
             />
           </div>
+          <TierToggle value={tier} onChange={setTier} kind="site" />
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={() => onCreate(name.trim() || 'Untitled site')}>
+          <Button onClick={() => onCreate(name.trim() || 'Untitled site', baseTheme)}>
             Create website
           </Button>
         </DialogFooter>
@@ -753,17 +771,23 @@ function CreateLandingPageDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreate: (name: string, slug: string) => void;
+  onCreate: (
+    name: string,
+    slug: string,
+    baseTheme: Extract<BaseThemeId, 'encore-page' | 'encore-page-pro'>,
+  ) => void;
 }) {
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');
   const [slugDirty, setSlugDirty] = useState(false);
+  const [tier, setTier] = useState<'standard' | 'pro'>('standard');
 
   useEffect(() => {
     if (open) {
       setName('');
       setSlug('');
       setSlugDirty(false);
+      setTier('standard');
     }
   }, [open]);
 
@@ -773,6 +797,7 @@ function CreateLandingPageDialog({
   }, [name, slugDirty]);
 
   const canSubmit = name.trim().length > 0;
+  const baseTheme = tier === 'pro' ? 'encore-page-pro' : 'encore-page';
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -809,23 +834,105 @@ function CreateLandingPageDialog({
                   setSlugDirty(true);
                 }}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && canSubmit) onCreate(name.trim(), slug);
+                  if (e.key === 'Enter' && canSubmit) onCreate(name.trim(), slug, baseTheme);
                 }}
                 className="border-0 px-1 shadow-none focus-visible:ring-0"
               />
             </div>
           </div>
+          <TierToggle value={tier} onChange={setTier} kind="landing_page" />
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button disabled={!canSubmit} onClick={() => canSubmit && onCreate(name.trim(), slug)}>
+          <Button
+            disabled={!canSubmit}
+            onClick={() => canSubmit && onCreate(name.trim(), slug, baseTheme)}
+          >
             Create landing page
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * Standard / Pro tier toggle used in both create dialogs. The chosen tier
+ * maps to the underlying Kajabi base-theme zip (set once at creation; never
+ * mutated by the editor — see AGENTS.md base-theme rules).
+ *
+ *   site         → streamlined-home    | streamlined-home-pro
+ *   landing_page → encore-page         | encore-page-pro
+ *
+ * Pro themes are 100% backward compatible (additive blocks + section
+ * settings: sliders, animations, column layouts, search/filter blocks,
+ * Pro footer). Existing sites are unaffected.
+ */
+function TierToggle({
+  value,
+  onChange,
+  kind,
+}: {
+  value: 'standard' | 'pro';
+  onChange: (v: 'standard' | 'pro') => void;
+  kind: 'site' | 'landing_page';
+}) {
+  const proHint =
+    kind === 'site'
+      ? 'Sliders, animations, column layouts, Pro footer, plus extra block types.'
+      : 'Sliders, animations, advanced section controls, plus extra block types.';
+  return (
+    <div className="flex flex-col gap-2">
+      <Label>Base template</Label>
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={() => onChange('standard')}
+          className={
+            'rounded-md border p-3 text-left transition-colors ' +
+            (value === 'standard'
+              ? 'border-primary bg-primary/5 ring-1 ring-primary'
+              : 'border-border bg-background hover:border-foreground/30')
+          }
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium">Standard</span>
+            {value === 'standard' && (
+              <Check className="h-3.5 w-3.5 text-primary" aria-hidden />
+            )}
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Battle-tested base template. Recommended for most sites.
+          </p>
+        </button>
+        <button
+          type="button"
+          onClick={() => onChange('pro')}
+          className={
+            'rounded-md border p-3 text-left transition-colors ' +
+            (value === 'pro'
+              ? 'border-primary bg-primary/5 ring-1 ring-primary'
+              : 'border-border bg-background hover:border-foreground/30')
+          }
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium">
+              Pro{' '}
+              <span className="ml-0.5 rounded-sm bg-primary/15 px-1 py-0.5 align-middle text-[9px] font-semibold uppercase tracking-wide text-primary">
+                New
+              </span>
+            </span>
+            {value === 'pro' && <Check className="h-3.5 w-3.5 text-primary" aria-hidden />}
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">{proHint}</p>
+        </button>
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        This choice is set once and can't be changed later.
+      </p>
+    </div>
   );
 }
 
