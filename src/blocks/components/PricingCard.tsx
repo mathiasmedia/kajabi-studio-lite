@@ -231,6 +231,8 @@ export const PricingCard: BlockComponent<PricingCardProps> = (props) => {
       {/* CTAs */}
       {props.buttonText && (
         <a
+          // .btn so Pro themeSettings button overrides reach the preview.
+          className="btn btn--solid btn--medium"
           href={props.buttonUrl || '#'}
           style={{
             display: 'block',

@@ -2,9 +2,9 @@
  * Landing Pages Dashboard — list, create, rename, duplicate, delete
  * `kind = 'landing_page'` rows.
  *
- * NOTE: This page is no longer routed by App.tsx — the unified workspace
- * at "/" shows both websites and landing pages. The file is kept for
- * thin-client sync compatibility with master.
+ * Mirrors SitesDashboard for visual consistency, but with a slug field on
+ * create + a slug badge on each card. Only loads landing pages (the
+ * default `kind` filter on `listSites` would hide them otherwise).
  */
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -80,6 +80,8 @@ export default function LandingPagesDashboard() {
     refresh();
   }, []);
 
+  // Realtime: refresh whenever any site row changes (insert/update/delete).
+  // We filter client-side to landing pages on the next refresh.
   useEffect(() => {
     const channel = supabase
       .channel('landing-pages-dashboard')
@@ -190,6 +192,8 @@ export default function LandingPagesDashboard() {
   );
 }
 
+// ---------- pieces ----------
+
 function EmptyState({ onCreate }: { onCreate: () => void }) {
   return (
     <Card className="flex flex-col items-center justify-center gap-4 border-dashed py-20 text-center">
@@ -226,7 +230,10 @@ function LandingPageCard({
 }) {
   return (
     <Card className="group overflow-hidden transition-shadow hover:shadow-md">
-      <button onClick={onOpen} className="block w-full cursor-pointer text-left">
+      <button
+        onClick={onOpen}
+        className="block w-full cursor-pointer text-left"
+      >
         <SitePreview site={page} />
       </button>
       <div className="flex items-start justify-between gap-2 p-4">
@@ -315,6 +322,7 @@ function CreateLandingPageDialog({
     }
   }, [open]);
 
+  // Auto-derive slug from name unless user has typed in the slug field.
   useEffect(() => {
     if (!slugDirty) setSlug(slugify(name));
   }, [name, slugDirty]);

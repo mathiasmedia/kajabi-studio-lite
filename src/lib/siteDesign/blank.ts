@@ -1,5 +1,11 @@
 /**
- * Blank SiteDesign baseline — used when creating brand-new sites.
+ * Blank SiteDesign baseline — used when creating brand-new sites now that
+ * templates are no longer code. Mirrors the old `blank` template:
+ *   - 8 standard Kajabi pages
+ *   - Each page = header + simple hero + footer
+ *   - Brand name parameterized so dashboards/copies feel personalized
+ *
+ * The AI in a thin client edits this JSON directly to build the real site.
  */
 import type { SiteDesign, DesignPage, DesignSection } from './types';
 import { SITE_DESIGN_VERSION } from './types';
@@ -86,6 +92,9 @@ const PAGE_BUILDERS: Record<(typeof PAGE_KEYS)[number], (brand: string) => Desig
   '404': (b) => heroPage(b, '404 — Page Not Found', "The page you're looking for doesn't exist or has moved.", 'Back to Home'),
 };
 
+/**
+ * Build a fresh blank `SiteDesign` for a new site, parameterized by brand name.
+ */
 export function buildBlankDesign(brandName: string): SiteDesign {
   const pages: Record<string, DesignPage> = {};
   for (const key of PAGE_KEYS) pages[key] = PAGE_BUILDERS[key](brandName);

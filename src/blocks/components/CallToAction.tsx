@@ -33,18 +33,30 @@ export const CallToAction: BlockComponent<CallToActionProps> = (props) => {
   return (
     <div style={{ textAlign: align, padding: '12px 0', ...chrome }}>
       <a
+        // .btn so Pro themeSettings button overrides (uppercase, letter-spacing,
+        // weight, padding, font-family) reach the preview via overrideCss.
+        className={`btn btn--${props.buttonStyle ?? 'solid'} btn--${props.buttonSize ?? 'medium'}`}
         href={props.buttonUrl}
         target={props.newTab ? '_blank' : undefined}
         rel={props.newTab ? 'noopener noreferrer' : undefined}
         style={{
           display: 'inline-block',
-          padding: '12px 24px',
-          color: props.buttonTextColor || (isOutline ? '#3B82F6' : '#fff'),
+          // No inline padding/font-size — let `.btn` overrideCss from
+          // resolvePreviewFonts() (driven by themeSettings.button_*_padding)
+          // win. Inline styles outrank external CSS, so setting padding here
+          // would silently break the Pro padding controls in the preview.
+          color: props.buttonTextColor || (isOutline ? 'currentColor' : '#fff'),
           backgroundColor: isOutline ? 'transparent' : (props.buttonBackgroundColor || '#3B82F6'),
-          border: isOutline ? '2px solid #3B82F6' : 'none',
+          // Outline border falls back to buttonTextColor (matches Pro Liquid
+          // semantics) and finally currentColor — never a hardcoded blue.
+          border: isOutline
+            ? `1px solid ${props.buttonBackgroundColor || props.buttonTextColor || 'currentColor'}`
+            : 'none',
           borderRadius: props.buttonBorderRadius ? `${props.buttonBorderRadius}px` : 4,
           textDecoration: 'none',
           width: props.buttonWidth === 'full' ? '100%' : 'auto',
+          // Tasteful preview defaults that .btn overrideCss can override.
+          padding: undefined,
         }}
       >
         {props.buttonText}

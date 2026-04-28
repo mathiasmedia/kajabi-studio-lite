@@ -11,12 +11,14 @@ import { exportFromTree, triggerDownload } from '@/blocks';
 import { supabase } from '@/integrations/supabase/client';
 import {
   getSite,
+  resolveBaseTheme,
   updateSite,
   type PageKey,
   type Site,
 } from '@/lib/siteStore';
 import { listSiteImages, imagesBySlot, type SiteImage } from '@/lib/imageStore';
 import { renderDesign, designToPageTrees } from '@/lib/siteDesign/render';
+import { resolvePreviewFonts } from '@/lib/siteDesign/resolvePreviewFonts';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -26,7 +28,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { ArrowLeft, Download, Pencil } from 'lucide-react';
+import { ArrowLeft, Download, Link2, Pencil } from 'lucide-react';
+import { toast } from 'sonner';
+import { persistExportZip, formatRelativeTime } from '@/lib/exportPersistence';
 
 const SYSTEM_PAGE_LABELS: Record<string, string> = {
   index: 'Home',
@@ -121,58 +125,94 @@ export default function SiteEditor() {
   // browser default — which then differs from what Kajabi renders after
   // export (where buildFontCssBlock writes real font-family rules).
   useEffect(() => {
-    const fonts = site?.design?.fonts;
-    if (!fonts) return;
-    const families: string[] = [];
-    const seen = new Set<string>();
-    // Some saved designs encode font weights inline as
-    // "Cormorant Garamond:400,500,500i". Strip everything from the first
-    // colon onward so both the Google Fonts request AND the CSS
-    // font-family declaration use the real family name.
-    const cleanName = (name?: string) => (name ? name.split(':')[0].trim() : '');
-    const add = (name?: string) => {
-      const key = cleanName(name);
-      if (!key || seen.has(key.toLowerCase())) return;
-      seen.add(key.toLowerCase());
-      families.push(`${key.replace(/\s+/g, '+')}:wght@300;400;500;600;700;800`);
-    };
-    add(fonts.heading);
-    add(fonts.body);
-    fonts.extras?.forEach(add);
-    if (families.length === 0) return;
-    const href = `https://fonts.googleapis.com/css2?${families.map(f => `family=${f}`).join('&')}&display=swap`;
-    const link = document.createElement('link');
-    link.rel = 'stylesheet';
-    link.href = href;
-    if (site?.id) link.dataset.previewFonts = site.id;
-    document.head.appendChild(link);
+    if (!site?.design) return;
+    const resolved = resolvePreviewFonts(site.design);
+    if (!resolved) return;
+    const { headingFamily, bodyFamily, googleFamilies, rawLinkTags } = resolved;
+    const cleanupNodes: HTMLElement[] = [];
 
-    // Apply the families. Scope to .preview-root so we don't restyle the
-    // editor chrome. Heading wins on h1-h6; body applies to everything else.
-    const style = document.createElement('style');
-    const headingName = cleanName(fonts.heading);
-    const bodyName = cleanName(fonts.body);
-    const headingStack = headingName ? `'${headingName}', Georgia, serif` : null;
-    const bodyStack = bodyName
-      ? `'${bodyName}', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`
+    // 1. Google Fonts <link> for any family we have a name for. Harmless if
+    //    the family is actually hosted on Adobe/self-hosted — Google just
+    //    returns 404 and the rawLinkTags below take over.
+    if (googleFamilies.length > 0) {
+      const families = googleFamilies.map((k) =>
+        `${k.replace(/\s+/g, '+')}:wght@300;400;500;600;700;800`,
+      );
+      const href = `https://fonts.googleapis.com/css2?${families.map((f) => `family=${f}`).join('&')}&display=swap`;
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = href;
+      if (site.id) link.dataset.previewFonts = site.id;
+      document.head.appendChild(link);
+      cleanupNodes.push(link);
+    }
+
+    // 2. Raw <link> tags pasted into themeSettings.font_stylesheet_links —
+    //    the only way Adobe Fonts / self-hosted CDNs reach the preview.
+    rawLinkTags.forEach((href) => {
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = href;
+      if (site.id) link.dataset.previewFonts = site.id;
+      document.head.appendChild(link);
+      cleanupNodes.push(link);
+    });
+
+    // 3. Apply the families. Scope to .preview-root so we don't restyle the
+    //    editor chrome. Heading wins on h1-h6; body applies to everything
+    //    else. Heading rule also targets descendants so inline accents
+    //    (em, span, strong, a) don't fall back to the body font.
+    const headingStack = headingFamily ? `'${headingFamily}', Georgia, serif` : null;
+    const bodyStack = bodyFamily
+      ? `'${bodyFamily}', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`
       : null;
-    // NOTE: the heading rule must also target descendants (em, span, strong, a)
-    // so inline accents like `<em>for everyday life</em>` inherit the heading
-    // family instead of being overridden by the broader `.preview-root *` body
-    // rule. Without `h1 *, h2 *, ...` the universal body selector wins on those
-    // children and the preview falls back to the body font (or serif default).
-    style.textContent = [
-      bodyStack ? `.preview-root, .preview-root * { font-family: ${bodyStack}; }` : '',
-      headingStack ? `.preview-root :is(h1,h2,h3,h4,h5,h6), .preview-root :is(h1,h2,h3,h4,h5,h6) * { font-family: ${headingStack}; }` : '',
-    ].filter(Boolean).join('\n');
-    if (site?.id) style.dataset.previewFonts = site.id;
-    document.head.appendChild(style);
+    if (headingStack || bodyStack || resolved.overrideCss) {
+      const style = document.createElement('style');
+      // Scope every Pro override rule to .preview-root so it doesn't bleed
+      // into the editor chrome. Naive prefixing is safe because overrideCss
+      // contains no @-rules at top level (media queries handled separately).
+      const scope = '.preview-root';
+      const scopeRules = (css: string) =>
+        css.replace(/(^|\})\s*([^{}@]+?)\s*\{/g, (_m, brace, sel) => {
+          const scoped = sel
+            .split(',')
+            .map((s: string) => `${scope} ${s.trim()}`)
+            .join(', ');
+          return `${brace} ${scoped} {`;
+        });
+      // Media queries need their inner selectors scoped, not the @media itself.
+      const scopedOverrides = resolved.overrideCss
+        ? resolved.overrideCss.replace(/@media[^{]+\{[^}]+\}\s*\}/g, (block) =>
+            block.replace(/(\{[^@}]*?)([a-zA-Z][^{}]*?)\s*\{/g, (_m, pre, sel) => {
+              const scoped = sel
+                .split(',')
+                .map((s: string) => `${scope} ${s.trim()}`)
+                .join(', ');
+              return `${pre} ${scoped} {`;
+            }),
+          )
+        : '';
+      // Top-level (non-@media) rules.
+      const topLevel = resolved.overrideCss.replace(/@media[^{]+\{[^}]+\}\s*\}/g, '').trim();
+      style.textContent = [
+        bodyStack ? `${scope}, ${scope} * { font-family: ${bodyStack}; }` : '',
+        headingStack
+          ? `${scope} :is(h1,h2,h3,h4,h5,h6), ${scope} :is(h1,h2,h3,h4,h5,h6) * { font-family: ${headingStack}; }`
+          : '',
+        topLevel ? scopeRules(topLevel) : '',
+        scopedOverrides,
+      ]
+        .filter(Boolean)
+        .join('\n');
+      if (site.id) style.dataset.previewFonts = site.id;
+      document.head.appendChild(style);
+      cleanupNodes.push(style);
+    }
 
     return () => {
-      link.remove();
-      style.remove();
+      cleanupNodes.forEach((n) => n.remove());
     };
-  }, [site?.design?.fonts, site?.id]);
+  }, [site?.design, site?.id]);
 
   // Inject the site's customCss into the editor preview so what you see
   // matches what the export ships to Kajabi. Two gotchas this handles:
@@ -183,8 +223,8 @@ export default function SiteEditor() {
   //      (`.preview-root > section...`) differ. Authors should write
   //      preview-scoped selectors in customCss alongside export selectors,
   //      e.g.:
-  //          section:first-of-type::before { ... }                  /* export */
-  //          .preview-root > section:first-of-type::before { ... }  /* preview */
+  //          section:first-of-type::before { ... }            /* export */
+  //          .preview-root > section:first-of-type::before { ... } /* preview */
   useEffect(() => {
     const css = site?.design?.customCss;
     if (!css || typeof css !== 'string' || css.trim() === '') return;
@@ -234,20 +274,44 @@ export default function SiteEditor() {
             }),
           }
         : undefined;
-      const baseTheme = site.kind === 'landing_page' ? 'encore-page' : 'streamlined-home';
       const blob = await exportFromTree(trees, {
         global,
         themeSettings,
         customCss,
-        baseTheme,
+        // base_theme is set once at site creation; resolveBaseTheme falls back
+        // to the family default (streamlined-home / encore-page) for legacy
+        // rows where the column is NULL. Pro sites + Pro landing pages flow
+        // through here without any other change.
+        baseTheme: resolveBaseTheme(site),
       });
       const safe = site.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'site';
       triggerDownload(blob, `${safe}.zip`);
+
+      // Fire-and-forget cloud upload — don't make the user wait.
+      // The realtime subscription on `sites` will refresh `site` once the
+      // row is updated, which lights up the Copy link button.
+      persistExportZip(site, blob).then((res) => {
+        if (res.ok) {
+          toast.success('Latest build link updated');
+        } else {
+          toast.error('Couldn\u2019t save build to cloud', { description: res.error });
+        }
+      });
     } catch (err) {
       console.error(err);
-      alert(`Export failed: ${(err as Error).message}`);
+      toast.error(`Export failed: ${(err as Error).message}`);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function copyLatestLink() {
+    if (!site?.latestExportUrl) return;
+    try {
+      await navigator.clipboard.writeText(site.latestExportUrl);
+      toast.success('Download link copied');
+    } catch (err) {
+      toast.error('Couldn\u2019t copy link', { description: (err as Error).message });
     }
   }
 
@@ -330,10 +394,30 @@ export default function SiteEditor() {
           </Select>
         )}
 
-        <Button onClick={handleExport} disabled={busy || !site.design} size="sm">
-          <Download className="h-4 w-4" />
-          {busy ? 'Building zip…' : exportLabel}
-        </Button>
+        <div className="flex flex-col items-end gap-1">
+          <div className="flex items-center gap-2">
+            {site.latestExportUrl && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={copyLatestLink}
+                title={`Copy stable download link\n${site.latestExportUrl}`}
+              >
+                <Link2 className="h-4 w-4" />
+                Copy link
+              </Button>
+            )}
+            <Button onClick={handleExport} disabled={busy || !site.design} size="sm">
+              <Download className="h-4 w-4" />
+              {busy ? 'Building zip…' : exportLabel}
+            </Button>
+          </div>
+          {site.latestExportAt && (
+            <span className="text-[11px] text-muted-foreground">
+              Latest build: {formatRelativeTime(site.latestExportAt)}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Preview */}
@@ -407,3 +491,4 @@ function SlugField({
     </button>
   );
 }
+

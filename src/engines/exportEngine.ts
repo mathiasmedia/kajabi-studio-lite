@@ -21,10 +21,6 @@ import {
   validateBaseTheme,
   type BaseThemeName,
 } from './baseThemeValidator';
-
-const DEFAULT_BASE_THEME: BaseThemeName = 'streamlined-home';
-// Back-compat alias for any local callers that still use the old name.
-type BaseTheme = BaseThemeName;
 import { checkForDefaultFallbacks, runParityAudit, type ParityAuditResult } from './exportParityAudit';
 import { transformForExport, buildArchetypeMap, type TransformReport } from './exportTransforms';
 import { enforceSettingSafety } from './settingSafety';
@@ -35,10 +31,52 @@ import type { VisualPlanV1 } from '@/types/schemas';
 
 const SYSTEM_TEMPLATE_SET = new Set<string>(SYSTEM_TEMPLATES);
 
+const DEFAULT_BASE_THEME: BaseThemeName = 'streamlined-home';
+type MergeableSettingIds = Set<string>;
+
 const JUNK_PATTERNS = ['__MACOSX', '.DS_Store', '/._', '/.'];
 
 function isJunkFile(path: string): boolean {
   return JUNK_PATTERNS.some(p => path.includes(p)) || path.startsWith('._');
+}
+
+function collectSettingIdsFromSchemaNode(node: unknown, out: Set<string>): void {
+  if (!node || typeof node !== 'object') return;
+  if (Array.isArray(node)) {
+    for (const item of node) collectSettingIdsFromSchemaNode(item, out);
+    return;
+  }
+
+  const record = node as Record<string, unknown>;
+  if (typeof record.id === 'string' && record.id.length > 0) {
+    out.add(record.id);
+  }
+
+  for (const value of Object.values(record)) {
+    if (value && typeof value === 'object') {
+      collectSettingIdsFromSchemaNode(value, out);
+    }
+  }
+}
+
+async function loadAllowedTemplateSettingIds(
+  zip: JSZip,
+  rootPrefix: string,
+): Promise<MergeableSettingIds> {
+  const fallback = new Set(EXPORTABLE_TEMPLATE_SETTING_IDS);
+  const schemaFile = zip.file(`${rootPrefix}config/settings_schema.json`);
+  if (!schemaFile) return fallback;
+
+  try {
+    const raw = await schemaFile.async('string');
+    const parsed = JSON.parse(raw);
+    const ids = new Set<string>();
+    collectSettingIdsFromSchemaNode(parsed, ids);
+    return ids.size > 0 ? ids : fallback;
+  } catch (error) {
+    console.warn('[Export] Could not read settings_schema.json from base theme, falling back to static allowlist:', error);
+    return fallback;
+  }
 }
 
 const REQUIRED_FOLDERS = ['config', 'layouts', 'templates', 'sections'];
@@ -64,7 +102,9 @@ function detectTopLevelFolder(zip: JSZip): string | null {
  * Load and clean the base theme zip. Returns the zip + root prefix + the
  * original settings_data.json parsed as an object.
  */
-async function loadBaseThemeZip(baseTheme: BaseTheme = DEFAULT_BASE_THEME): Promise<{
+async function loadBaseThemeZip(
+  baseTheme: BaseThemeName = DEFAULT_BASE_THEME,
+): Promise<{
   zip: JSZip;
   rootPrefix: string;
   originalSettings: Record<string, unknown> | null;
@@ -96,11 +136,8 @@ async function loadBaseThemeZip(baseTheme: BaseTheme = DEFAULT_BASE_THEME): Prom
       sourceZip = await JSZip.loadAsync(buf);
     } else {
       // Final fallback: direct fetch
-      const fallbackUrl = baseTheme === 'encore-page'
-        ? '/base-theme/encore-landing-page.zip'
-        : '/base-theme/streamlined-home.zip';
       try {
-        const resp = await fetch(fallbackUrl);
+        const resp = await fetch(`/base-theme/${baseTheme}.zip`);
         if (resp.ok) {
           const buf = await resp.arrayBuffer();
           sourceZip = await JSZip.loadAsync(buf);
@@ -111,12 +148,10 @@ async function loadBaseThemeZip(baseTheme: BaseTheme = DEFAULT_BASE_THEME): Prom
     }
   }
 
-  const fallbackRoot = baseTheme === 'encore-page' ? 'encore-page/' : 'streamlined-home/';
-
   if (sourceZip) {
     const existingRoot = detectTopLevelFolder(sourceZip);
     const cleanZip = new JSZip();
-    const rootPrefix = existingRoot || fallbackRoot;
+    const rootPrefix = existingRoot || `${baseTheme}/`;
 
     let originalSettings: Record<string, unknown> | null = null;
 
@@ -156,7 +191,7 @@ async function loadBaseThemeZip(baseTheme: BaseTheme = DEFAULT_BASE_THEME): Prom
 
   // Fallback: create minimal structure
   const zip = new JSZip();
-  const rootPrefix = fallbackRoot;
+  const rootPrefix = `${baseTheme}/`;
   zip.file(`${rootPrefix}layouts/theme.liquid`, `<!DOCTYPE html>
 <html>
 <head>
@@ -185,7 +220,8 @@ async function loadBaseThemeZip(baseTheme: BaseTheme = DEFAULT_BASE_THEME): Prom
  */
 function mergeSettings(
   original: Record<string, unknown>,
-  generated: Record<string, unknown>
+  generated: Record<string, unknown>,
+  exportableSettingIds: MergeableSettingIds = EXPORTABLE_TEMPLATE_SETTING_IDS,
 ): Record<string, unknown> {
   const origCurrent = (original as { current?: Record<string, unknown> }).current || {};
   const genCurrent = (generated as { current?: Record<string, unknown> }).current || {};
@@ -258,7 +294,7 @@ function mergeSettings(
   // --- Merge global theme settings (catalog-driven from settings_schema.json) ---
   // Only overwrite if the generated value is non-empty. Unknown top-level keys
   // are skipped so we never leak invented settings into the final zip.
-  for (const key of EXPORTABLE_TEMPLATE_SETTING_IDS) {
+  for (const key of exportableSettingIds) {
     const genValue = genCurrent[key];
     if (genValue !== undefined && genValue !== '' && genValue !== null) {
       merged[key] = genValue;
@@ -270,7 +306,7 @@ function mergeSettings(
   const unknownGenerated: string[] = [];
   for (const key of Object.keys(genCurrent)) {
     if (key === 'sections' || key === 'link_lists' || key.startsWith('content_for_')) continue;
-    if (!EXPORTABLE_TEMPLATE_SETTING_IDS.has(key)) unknownGenerated.push(key);
+    if (!exportableSettingIds.has(key)) unknownGenerated.push(key);
   }
   if (unknownGenerated.length > 0) {
     console.warn(`[Export] ${unknownGenerated.length} generated top-level key(s) not in settings_schema.json — skipped:`, unknownGenerated);
@@ -387,6 +423,7 @@ export async function exportThemeZip(
   options: ExportThemeZipOptions = {},
 ): Promise<Blob> {
   const baseTheme: BaseThemeName = options.baseTheme ?? DEFAULT_BASE_THEME;
+
   // Structural validation of generated data
   const validation = validateSettingsData(settingsData);
   if (!validation.valid) {
@@ -469,8 +506,10 @@ export async function exportThemeZip(
 
   // Merge generated into original (or use generated as-is if no original)
   let finalSettings: Record<string, unknown>;
+  const exportableSettingIds = await loadAllowedTemplateSettingIds(zip, rootPrefix);
+
   if (originalSettings) {
-    finalSettings = mergeSettings(originalSettings, settingsForMerge);
+    finalSettings = mergeSettings(originalSettings, settingsForMerge, exportableSettingIds);
     console.log('[Export] Merged generated settings into original template — all non-index settings preserved');
   } else {
     finalSettings = settingsForMerge;
@@ -488,7 +527,7 @@ export async function exportThemeZip(
 
   // --- Post-merge: template-settings audit ---
   const finalCurrent = (finalSettings as { current?: Record<string, unknown> }).current || {};
-  const templateAudit = auditTemplateSettings(finalCurrent);
+  const templateAudit = auditTemplateSettings(finalCurrent, exportableSettingIds);
   const templateErrors = templateAudit.issues.filter(i => i.level === 'error');
   if (templateErrors.length > 0) {
     console.error(`[Export] Template settings: ${templateErrors.length} error(s):`, templateErrors);

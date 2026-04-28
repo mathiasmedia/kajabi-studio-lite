@@ -1,6 +1,12 @@
 /**
  * Image store — Supabase-backed CRUD for per-site image library.
- * Talks to the master Supabase project (shared backend).
+ *
+ * Three intake paths:
+ *   1. uploadSiteImage(siteId, file, opts)   — direct upload to Storage
+ *   2. generateSiteImage(siteId, opts)       — calls generate-site-image edge fn
+ *   3. (unsplash — TODO, deferred)
+ *
+ * All reads/writes use RLS — users only see their own site images.
  */
 import { supabase } from '@/integrations/supabase/client';
 
@@ -50,6 +56,8 @@ function rowToImage(row: SiteImageRow): SiteImage {
   };
 }
 
+// ---- list ----
+
 export async function listSiteImages(siteId: string): Promise<SiteImage[]> {
   const { data, error } = await supabase
     .from('site_images')
@@ -62,6 +70,8 @@ export async function listSiteImages(siteId: string): Promise<SiteImage[]> {
   }
   return (data ?? []).map((r) => rowToImage(r as SiteImageRow));
 }
+
+// ---- upload ----
 
 export async function uploadSiteImage(
   siteId: string,
@@ -107,6 +117,8 @@ export async function uploadSiteImage(
   return rowToImage(row as SiteImageRow);
 }
 
+// ---- AI generate (calls edge function) ----
+
 export async function generateSiteImage(
   siteId: string,
   opts: { prompt: string; alt?: string; slot?: string }
@@ -121,6 +133,7 @@ export async function generateSiteImage(
   if (!data?.url) {
     return { image: null, error: 'No image returned' };
   }
+  // Refetch the full row for consistency
   const { data: row } = await supabase
     .from('site_images')
     .select('*')
@@ -128,6 +141,8 @@ export async function generateSiteImage(
     .maybeSingle();
   return { image: row ? rowToImage(row as SiteImageRow) : null, error: null };
 }
+
+// ---- update / delete ----
 
 export async function updateSiteImage(
   id: string,
@@ -157,8 +172,10 @@ export async function deleteSiteImage(image: SiteImage): Promise<void> {
   if (error) console.error('[imageStore] deleteSiteImage failed', error);
 }
 
+/** Resolve image slots for a site → { [slot]: SiteImage }. Last image wins per slot. */
 export function imagesBySlot(images: SiteImage[]): Record<string, SiteImage> {
   const out: Record<string, SiteImage> = {};
+  // Iterate oldest→newest so newest wins
   const sorted = [...images].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   for (const img of sorted) {
     if (img.slot) out[img.slot] = img;
