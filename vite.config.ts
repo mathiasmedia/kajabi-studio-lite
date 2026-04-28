@@ -21,6 +21,5 @@ export default defineConfig(({ mode }) => ({
   },
   optimizeDeps: {
     include: ['jszip'],
-    exclude: ['@k-studio-pro/engine'],
   },
 }));
