@@ -15,7 +15,16 @@
 import JSZip from 'jszip';
 import { validateAndRepairSections, getExportBlockingErrors } from './kajabiFieldSchema';
 import { resolveAssetsForExport, downloadAssetBlob, validateAssets } from './assetManager';
-import { getCachedZip, getCachedValidation, validateBaseTheme, DEFAULT_BASE_THEME, type BaseTheme } from './baseThemeValidator';
+import {
+  getCachedZip,
+  getCachedValidation,
+  validateBaseTheme,
+  type BaseThemeName,
+} from './baseThemeValidator';
+
+const DEFAULT_BASE_THEME: BaseThemeName = 'streamlined-home';
+// Back-compat alias for any local callers that still use the old name.
+type BaseTheme = BaseThemeName;
 import { checkForDefaultFallbacks, runParityAudit, type ParityAuditResult } from './exportParityAudit';
 import { transformForExport, buildArchetypeMap, type TransformReport } from './exportTransforms';
 import { enforceSettingSafety } from './settingSafety';
@@ -366,12 +375,18 @@ function validateZipShape(zip: JSZip, rootPrefix: string): { valid: boolean; iss
 
 // ---- Main export ----
 
+export interface ExportThemeZipOptions {
+  /** Which Kajabi base theme to merge into. Defaults to 'streamlined-home'. */
+  baseTheme?: BaseThemeName;
+}
+
 export async function exportThemeZip(
   settingsData: Record<string, unknown>,
   projectAssets: ProjectAsset[] = [],
   visualPlan?: VisualPlanV1,
-  baseTheme: BaseTheme = DEFAULT_BASE_THEME,
+  options: ExportThemeZipOptions = {},
 ): Promise<Blob> {
+  const baseTheme: BaseThemeName = options.baseTheme ?? DEFAULT_BASE_THEME;
   // Structural validation of generated data
   const validation = validateSettingsData(settingsData);
   if (!validation.valid) {

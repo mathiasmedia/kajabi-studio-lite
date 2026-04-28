@@ -79,8 +79,10 @@ export async function persistExportZip(
     const latestAt = now.toISOString();
 
     const updated = await updateSite(site.id, {
-      latestExportUrl: latestUrl,
-      latestExportAt: latestAt,
+      // latestExportUrl/latestExportAt are not yet part of the Site type in
+      // this thin client — cast through unknown so we can still attempt the
+      // patch when the underlying DB columns exist.
+      ...({ latestExportUrl: latestUrl, latestExportAt: latestAt } as unknown as Record<string, never>),
     });
     if (!updated) {
       return {
