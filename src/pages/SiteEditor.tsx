@@ -1,9 +1,5 @@
 /**
  * Site Editor — single-site preview + multi-page tab switcher + export.
- *
- * Reads the site by `:siteId` from the database, renders pages from
- * `site.design` JSON via the SiteDesign renderer, and exports the whole
- * multi-page tree as a Kajabi zip.
  */
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -43,7 +39,6 @@ const SYSTEM_PAGE_LABELS: Record<string, string> = {
   '404': '404',
 };
 
-/** Friendly tab label for any system or custom page key. */
 function pageLabel(key: PageKey): string {
   if (SYSTEM_PAGE_LABELS[key]) return SYSTEM_PAGE_LABELS[key];
   return key
@@ -87,9 +82,6 @@ export default function SiteEditor() {
     };
   }, [siteId, navigate]);
 
-  // Realtime: when this site's row OR its site_images change (e.g. the agent
-  // saves via update-site-design or generates an image), refetch so the
-  // preview updates without the user reloading.
   useEffect(() => {
     if (!siteId) return;
     const channel = supabase
@@ -119,11 +111,6 @@ export default function SiteEditor() {
   const slotMap = useMemo(() => imagesBySlot(images), [images]);
   const pageKeys = site?.design?.pageKeys ?? [];
 
-  // Preview-time font loading: inject a Google Fonts <link> AND a <style>
-  // rule that actually applies the families to the rendered preview tree.
-  // Without the style rule, fonts download but the preview still shows the
-  // browser default — which then differs from what Kajabi renders after
-  // export (where buildFontCssBlock writes real font-family rules).
   useEffect(() => {
     if (!site?.design) return;
     const resolved = resolvePreviewFonts(site.design);
@@ -131,9 +118,6 @@ export default function SiteEditor() {
     const { headingFamily, bodyFamily, googleFamilies, rawLinkTags } = resolved;
     const cleanupNodes: HTMLElement[] = [];
 
-    // 1. Google Fonts <link> for any family we have a name for. Harmless if
-    //    the family is actually hosted on Adobe/self-hosted — Google just
-    //    returns 404 and the rawLinkTags below take over.
     if (googleFamilies.length > 0) {
       const families = googleFamilies.map((k) =>
         `${k.replace(/\s+/g, '+')}:wght@300;400;500;600;700;800`,
@@ -147,8 +131,6 @@ export default function SiteEditor() {
       cleanupNodes.push(link);
     }
 
-    // 2. Raw <link> tags pasted into themeSettings.font_stylesheet_links —
-    //    the only way Adobe Fonts / self-hosted CDNs reach the preview.
     rawLinkTags.forEach((href) => {
       const link = document.createElement('link');
       link.rel = 'stylesheet';
@@ -158,19 +140,12 @@ export default function SiteEditor() {
       cleanupNodes.push(link);
     });
 
-    // 3. Apply the families. Scope to .preview-root so we don't restyle the
-    //    editor chrome. Heading wins on h1-h6; body applies to everything
-    //    else. Heading rule also targets descendants so inline accents
-    //    (em, span, strong, a) don't fall back to the body font.
     const headingStack = headingFamily ? `'${headingFamily}', Georgia, serif` : null;
     const bodyStack = bodyFamily
       ? `'${bodyFamily}', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`
       : null;
     if (headingStack || bodyStack || resolved.overrideCss) {
       const style = document.createElement('style');
-      // Scope every Pro override rule to .preview-root so it doesn't bleed
-      // into the editor chrome. Naive prefixing is safe because overrideCss
-      // contains no @-rules at top level (media queries handled separately).
       const scope = '.preview-root';
       const scopeRules = (css: string) =>
         css.replace(/(^|\})\s*([^{}@]+?)\s*\{/g, (_m, brace, sel) => {
@@ -180,7 +155,6 @@ export default function SiteEditor() {
             .join(', ');
           return `${brace} ${scoped} {`;
         });
-      // Media queries need their inner selectors scoped, not the @media itself.
       const scopedOverrides = resolved.overrideCss
         ? resolved.overrideCss.replace(/@media[^{]+\{[^}]+\}\s*\}/g, (block) =>
             block.replace(/(\{[^@}]*?)([a-zA-Z][^{}]*?)\s*\{/g, (_m, pre, sel) => {
@@ -192,7 +166,6 @@ export default function SiteEditor() {
             }),
           )
         : '';
-      // Top-level (non-@media) rules.
       const topLevel = resolved.overrideCss.replace(/@media[^{]+\{[^}]+\}\s*\}/g, '').trim();
       style.textContent = [
         bodyStack ? `${scope}, ${scope} * { font-family: ${bodyStack}; }` : '',
@@ -214,17 +187,6 @@ export default function SiteEditor() {
     };
   }, [site?.design, site?.id]);
 
-  // Inject the site's customCss into the editor preview so what you see
-  // matches what the export ships to Kajabi. Two gotchas this handles:
-  //   1. Without this, customCss is ONLY applied at export time — the
-  //      editor preview renders without it, so overlays/tweaks look broken
-  //      in the editor even though the exported zip is correct.
-  //   2. The export DOM (Kajabi page wrapper) and the preview DOM
-  //      (`.preview-root > section...`) differ. Authors should write
-  //      preview-scoped selectors in customCss alongside export selectors,
-  //      e.g.:
-  //          section:first-of-type::before { ... }            /* export */
-  //          .preview-root > section:first-of-type::before { ... } /* preview */
   useEffect(() => {
     const css = site?.design?.customCss;
     if (!css || typeof css !== 'string' || css.trim() === '') return;
@@ -278,18 +240,11 @@ export default function SiteEditor() {
         global,
         themeSettings,
         customCss,
-        // base_theme is set once at site creation; resolveBaseTheme falls back
-        // to the family default (streamlined-home / encore-page) for legacy
-        // rows where the column is NULL. Pro sites + Pro landing pages flow
-        // through here without any other change.
         baseTheme: resolveBaseTheme(site),
       });
       const safe = site.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'site';
       triggerDownload(blob, `${safe}.zip`);
 
-      // Fire-and-forget cloud upload — don't make the user wait.
-      // The realtime subscription on `sites` will refresh `site` once the
-      // row is updated, which lights up the Copy link button.
       persistExportZip(site, blob).then((res) => {
         if (res.ok) {
           toast.success('Latest build link updated');
@@ -329,12 +284,11 @@ export default function SiteEditor() {
 
   const isLandingPage = site.kind === 'landing_page';
   const backLabel = isLandingPage ? 'All landing pages' : 'All sites';
-  const backHref = isLandingPage ? '/landing-pages' : '/';
+  const backHref = '/';
   const exportLabel = isLandingPage ? 'Export landing page' : 'Export theme';
 
   return (
     <div className="min-h-screen bg-muted/20">
-      {/* Sticky editor bar */}
       <div className="sticky top-0 z-50 flex flex-wrap items-center justify-between gap-3 border-b border-border bg-background/95 px-4 py-3 backdrop-blur">
         <div className="flex items-center gap-3 min-w-0">
           <Button variant="ghost" size="sm" onClick={() => navigate(backHref)}>
@@ -366,11 +320,7 @@ export default function SiteEditor() {
             </button>
           )}
           {isLandingPage ? (
-            <SlugField
-              key={site.id}
-              initial={site.slug ?? ''}
-              onCommit={commitSlug}
-            />
+            <SlugField key={site.id} initial={site.slug ?? ''} onCommit={commitSlug} />
           ) : (
             <span className="hidden text-xs text-muted-foreground sm:inline">
               · {pageKeys.length} {pageKeys.length === 1 ? 'page' : 'pages'}
@@ -378,7 +328,6 @@ export default function SiteEditor() {
           )}
         </div>
 
-        {/* Page selector — hidden for landing pages (single page only). */}
         {!isLandingPage && (
           <Select value={activePage} onValueChange={(v) => setActivePage(v as PageKey)}>
             <SelectTrigger className="h-9 w-56">
@@ -420,7 +369,6 @@ export default function SiteEditor() {
         </div>
       </div>
 
-      {/* Preview */}
       <div className="preview-root">
         {PreviewPage ?? (
           <div className="flex min-h-[60vh] items-center justify-center text-muted-foreground">
@@ -432,10 +380,6 @@ export default function SiteEditor() {
   );
 }
 
-/**
- * Inline slug editor for landing pages. Stays uncontrolled so the user can
- * type freely; commits onBlur or Enter (slugified server-side too).
- */
 function SlugField({
   initial,
   onCommit,
@@ -491,4 +435,3 @@ function SlugField({
     </button>
   );
 }
-
