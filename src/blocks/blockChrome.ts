@@ -1,5 +1,25 @@
 /**
- * Universal block chrome — Kajabi block-level styling shared by ALL block types.
+ * Universal block chrome — Kajabi block-level styling shared by ALL block
+ * types. Mirrors the chrome fields in `snippets/block.liquid`:
+ *
+ *   - background_color
+ *   - padding (object: top/right/bottom/left, in px as string)
+ *   - border_radius (px number string or CSS value)
+ *   - box_shadow (none | small | medium | large)
+ *
+ * Every block component owns its own card chrome by spreading the result of
+ * `getBlockChromeStyle(props)` onto its root <div>'s `style`. This is the
+ * "self-chromed for everyone" contract: a value present on a block paints
+ * the block's own visible shape, not a wrapper band around it.
+ *
+ * The companion `BlockWrapper` no longer applies any of these fields — it
+ * only handles things blocks can't do themselves (visibility, animation).
+ *
+ * Adding a new universal field:
+ *   1) extend ChromeProps below
+ *   2) handle it in getBlockChromeStyle
+ *   3) add an alias in kajabiPropAliases.ts (UNIVERSAL_CHROME_ALIASES)
+ *   4) every block picks it up automatically.
  */
 import type { CSSProperties } from 'react';
 
@@ -10,6 +30,7 @@ const SHADOW_MAP: Record<string, string> = {
   large: '0 12px 32px rgba(0,0,0,0.18), 0 4px 8px rgba(0,0,0,0.10)',
 };
 
+/** Kajabi padding object — fields are numeric strings in px. */
 export interface PaddingObject {
   top?: string | number;
   right?: string | number;
@@ -17,8 +38,14 @@ export interface PaddingObject {
   left?: string | number;
 }
 
+/**
+ * Props every block component accepts for universal chrome.
+ * All optional — when none are set, the helper returns `undefined`
+ * so blocks can fall back to their built-in defaults cleanly.
+ */
 export interface ChromeProps {
   backgroundColor?: string;
+  /** Either a structured object or a JSON string emitted by the planner. */
   padding?: PaddingObject | string;
   borderRadius?: string | number;
   boxShadow?: 'none' | 'small' | 'medium' | 'large' | string;
@@ -59,6 +86,11 @@ function paddingToCss(raw: PaddingObject | string | undefined): Partial<CSSPrope
   return out;
 }
 
+/**
+ * Build a CSS style object from chrome props. Returns `undefined` when no
+ * chrome fields are set so blocks can keep their built-in defaults
+ * (e.g. Card's white background, PricingCard's transparent).
+ */
 export function getBlockChromeStyle(props: ChromeProps): CSSProperties | undefined {
   const style: CSSProperties = {};
   let touched = false;
@@ -89,6 +121,7 @@ export function getBlockChromeStyle(props: ChromeProps): CSSProperties | undefin
         touched = true;
       }
     } else {
+      // raw CSS value pass-through
       style.boxShadow = shadow;
       touched = true;
     }
@@ -97,6 +130,11 @@ export function getBlockChromeStyle(props: ChromeProps): CSSProperties | undefin
   return touched ? style : undefined;
 }
 
+/**
+ * Serialize preview chrome props back into the Kajabi block fields the real
+ * renderer understands. This is what makes chat-applied card chrome survive
+ * the serialize -> Kajabi preview path instead of only the local React preview.
+ */
 export function serializeChromeProps(props: ChromeProps): Record<string, unknown> {
   const out: Record<string, unknown> = {};
 
