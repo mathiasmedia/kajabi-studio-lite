@@ -1,8 +1,5 @@
 /**
  * Block components — barrel export.
- *
- * Import everything from here:
- *   import { Text, Feature, HeaderSection, ... } from '@/blocks';
  */
 export * from './types';
 export { serializeTree, SUPPORTED_TEMPLATES } from './serialize';
@@ -11,7 +8,6 @@ export { HeaderSection, ContentSection, FooterSection } from './sections';
 export { RawSection } from './RawSection';
 export type { RawSectionProps } from './RawSection';
 
-// Block components (12 total)
 export { Text } from './components/Text';
 export { CallToAction } from './components/CallToAction';
 export { CustomCode } from './components/CustomCode';
@@ -30,6 +26,5 @@ export { LinkList } from './components/LinkList';
 export { Logo } from './components/Logo';
 export { Copyright } from './components/Copyright';
 
-// Export pipeline
 export { exportFromTree, triggerDownload, injectFontCss, injectGlobalCss } from './export';
 export type { ExportFromTreeOptions } from './export';

@@ -55,6 +55,8 @@ export const Form: BlockComponent<FormProps> = (props) => {
         />
         <button
           type="button"
+          // .btn so Pro themeSettings button overrides reach the preview.
+          className="btn btn--solid btn--medium"
           disabled
           style={{
             padding: '10px 16px',

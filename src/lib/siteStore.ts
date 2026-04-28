@@ -25,6 +25,39 @@ import { buildLandingPageBlankDesign } from './siteDesign/landingPageBlank';
 export type SiteKind = 'site' | 'landing_page';
 
 /**
+ * Which Kajabi base theme this site exports against. Picked once at creation
+ * time and never mutated by the editor. NULL on legacy rows — the editor
+ * falls back to the family default at export time (streamlined-home for
+ * sites, encore-page for landing pages).
+ */
+export type BaseThemeId =
+  | 'streamlined-home'
+  | 'streamlined-home-pro'
+  | 'encore-page'
+  | 'encore-page-pro';
+
+const VALID_BASE_THEMES: ReadonlySet<string> = new Set<BaseThemeId>([
+  'streamlined-home',
+  'streamlined-home-pro',
+  'encore-page',
+  'encore-page-pro',
+]);
+
+function coerceBaseTheme(v: unknown): BaseThemeId | null {
+  return typeof v === 'string' && VALID_BASE_THEMES.has(v) ? (v as BaseThemeId) : null;
+}
+
+/**
+ * Resolve the effective base theme for a site, falling back to the family
+ * default when the row has nothing stored. Use this anywhere the export
+ * pipeline needs a concrete value (i.e. always — it never accepts null).
+ */
+export function resolveBaseTheme(site: Pick<Site, 'kind' | 'baseTheme'>): BaseThemeId {
+  if (site.baseTheme) return site.baseTheme;
+  return site.kind === 'landing_page' ? 'encore-page' : 'streamlined-home';
+}
+
+/**
  * Kajabi system page slots — these MUST exist in every theme. Custom page
  * keys (any string) live alongside them in `design.pageKeys` and the export
  * pipeline materializes each as `templates/<key>.liquid`.
@@ -79,6 +112,19 @@ export interface Site {
    * regular sites typically leave this null.
    */
   slug: string | null;
+  /**
+   * Which Kajabi base theme zip the export pipeline merges into. Set once
+   * at creation; null on legacy rows (in which case `resolveBaseTheme()`
+   * falls back to the family default).
+   */
+  baseTheme: BaseThemeId | null;
+  /**
+   * Public URL of the most recent exported zip (`<userId>/<siteId>/latest.zip`
+   * in the `site-exports` bucket). Null until the first export.
+   */
+  latestExportUrl: string | null;
+  /** When `latestExportUrl` was last updated. Null until the first export. */
+  latestExportAt: string | null;
 }
 
 // ---- row <-> domain mapping ----
@@ -95,6 +141,9 @@ function rowToSite(row: {
   user_id: string;
   kind?: string | null;
   slug?: string | null;
+  base_theme?: string | null;
+  latest_export_url?: string | null;
+  latest_export_at?: string | null;
 }): Site {
   // Defensive: any row without a recognized kind is treated as 'site'.
   const kind: SiteKind = row.kind === 'landing_page' ? 'landing_page' : 'site';
@@ -110,6 +159,9 @@ function rowToSite(row: {
     userId: row.user_id,
     kind,
     slug: row.slug ?? null,
+    baseTheme: coerceBaseTheme(row.base_theme),
+    latestExportUrl: row.latest_export_url ?? null,
+    latestExportAt: row.latest_export_at ?? null,
   };
 }
 
@@ -159,6 +211,12 @@ export function slugify(input: string): string {
 export async function createSite(opts: {
   name: string;
   brandName?: string;
+  /**
+   * Which website base theme to export against. Defaults to the Standard
+   * theme (`streamlined-home`); pass `'streamlined-home-pro'` for the Pro
+   * variant. Set once at creation — there is no editor UI to change it later.
+   */
+  baseTheme?: Extract<BaseThemeId, 'streamlined-home' | 'streamlined-home-pro'>;
 }): Promise<Site | null> {
   const { data: userData } = await supabase.auth.getUser();
   const userId = userData.user?.id;
@@ -169,6 +227,7 @@ export async function createSite(opts: {
   const name = opts.name.trim() || 'Untitled site';
   const brand = opts.brandName?.trim() || name;
   const design = buildBlankDesign(brand);
+  const baseTheme: BaseThemeId = opts.baseTheme ?? 'streamlined-home';
   const { data, error } = await supabase
     .from('sites')
     .insert({
@@ -179,6 +238,7 @@ export async function createSite(opts: {
       pages: {},
       design: design as never,
       kind: 'site',
+      base_theme: baseTheme,
     })
     .select()
     .single();
@@ -198,6 +258,12 @@ export async function createLandingPage(opts: {
   name: string;
   brandName?: string;
   slug?: string;
+  /**
+   * Which landing-page base theme to export against. Defaults to the
+   * Standard theme (`encore-page`); pass `'encore-page-pro'` for the Pro
+   * variant. Set once at creation — there is no editor UI to change it later.
+   */
+  baseTheme?: Extract<BaseThemeId, 'encore-page' | 'encore-page-pro'>;
 }): Promise<Site | null> {
   const { data: userData } = await supabase.auth.getUser();
   const userId = userData.user?.id;
@@ -209,6 +275,7 @@ export async function createLandingPage(opts: {
   const brand = opts.brandName?.trim() || name;
   const slug = (opts.slug?.trim() ? slugify(opts.slug) : slugify(name)) || 'landing';
   const design = buildLandingPageBlankDesign(brand);
+  const baseTheme: BaseThemeId = opts.baseTheme ?? 'encore-page';
   const { data, error } = await supabase
     .from('sites')
     .insert({
@@ -220,6 +287,7 @@ export async function createLandingPage(opts: {
       design: design as never,
       kind: 'landing_page',
       slug,
+      base_theme: baseTheme,
     })
     .select()
     .single();
@@ -232,7 +300,9 @@ export async function createLandingPage(opts: {
 
 export async function updateSite(
   id: string,
-  patch: Partial<Omit<Site, 'id' | 'createdAt' | 'templateId' | 'userId' | 'kind'>>
+  // base_theme is intentionally NOT in the patch type — it's set-once at
+  // creation. The editor never mutates it (per AGENTS.md base-theme rules).
+  patch: Partial<Omit<Site, 'id' | 'createdAt' | 'templateId' | 'userId' | 'kind' | 'baseTheme'>>
 ): Promise<Site | null> {
   const row: {
     name?: string;
@@ -240,12 +310,16 @@ export async function updateSite(
     pages?: Site['pages'];
     design?: SiteDesign;
     slug?: string | null;
+    latest_export_url?: string | null;
+    latest_export_at?: string | null;
   } = {};
   if (patch.name !== undefined) row.name = patch.name;
   if (patch.brandName !== undefined) row.brand_name = patch.brandName;
   if (patch.pages !== undefined) row.pages = patch.pages;
   if (patch.design !== undefined && patch.design !== null) row.design = patch.design;
   if (patch.slug !== undefined) row.slug = patch.slug ? slugify(patch.slug) : null;
+  if (patch.latestExportUrl !== undefined) row.latest_export_url = patch.latestExportUrl;
+  if (patch.latestExportAt !== undefined) row.latest_export_at = patch.latestExportAt;
   const { data, error } = await supabase
     .from('sites')
     .update(row as never)
@@ -262,15 +336,22 @@ export async function updateSite(
 export async function duplicateSite(id: string): Promise<Site | null> {
   const original = await getSite(id);
   if (!original) return null;
-  // Duplicates inherit the original's kind via createSite/createLandingPage.
+  // Duplicates inherit the original's kind AND base_theme so a Pro site
+  // duplicates into another Pro site (and Standard → Standard).
   const copy = original.kind === 'landing_page'
     ? await createLandingPage({
         name: `${original.name} (copy)`,
         brandName: original.brandName,
+        baseTheme: (original.baseTheme === 'encore-page-pro'
+          ? 'encore-page-pro'
+          : 'encore-page') as Extract<BaseThemeId, 'encore-page' | 'encore-page-pro'>,
       })
     : await createSite({
         name: `${original.name} (copy)`,
         brandName: original.brandName,
+        baseTheme: (original.baseTheme === 'streamlined-home-pro'
+          ? 'streamlined-home-pro'
+          : 'streamlined-home') as Extract<BaseThemeId, 'streamlined-home' | 'streamlined-home-pro'>,
       });
   if (!copy || !original.design) return copy;
   return updateSite(copy.id, { design: original.design });
@@ -288,3 +369,4 @@ export async function deleteSite(id: string): Promise<void> {
 export function enabledPageCount(site: Site): number {
   return SYSTEM_PAGE_KEYS.filter((k) => site.pages[k]?.enabled !== false).length;
 }
+

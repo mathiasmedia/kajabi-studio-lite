@@ -118,6 +118,27 @@ const SECTION_FIELD_DEFS: Record<string, FieldDef> = {
   copyright_text_color:          { type: 'hex_color', defaultValue: '' },
   powered_by_text_color:         { type: 'hex_color', defaultValue: '' },
   vertical_layout:               { type: 'boolean_string', defaultValue: 'false' },
+  // ---- Pro-only section.liquid slider fields (streamlined-home-pro / encore-page-pro) ----
+  // Verified field IDs from streamlined-home-pro/sections/section.liquid schema.
+  // Harmless on Standard themes (silently dropped by Kajabi); we keep them in
+  // the section schema so the validator doesn't flag them as block-level leaks.
+  enable_slider:                 { type: 'boolean_string', defaultValue: 'false' },
+  blocks_per_slide:              { type: 'number_string', defaultValue: '3' },
+  hide_overflow:                 { type: 'boolean_string', defaultValue: 'true' },
+  slider_preset:                 { type: 'enum', enumValues: ['default', 'modern'], defaultValue: 'modern' },
+  show_arrows:                   { type: 'boolean_string', defaultValue: 'true' },
+  arrow_color:                   { type: 'hex_color', defaultValue: '' },
+  arrow_slider_margin:           { type: 'number_string', defaultValue: '0' },
+  show_dots:                     { type: 'boolean_string', defaultValue: 'true' },
+  dot_color:                     { type: 'hex_color', defaultValue: '' },
+  transition_effect:             { type: 'enum', enumValues: ['slide', 'coverflow', 'fade', 'cube', 'flip'], defaultValue: 'slide' },
+  transition_speed:              { type: 'number_string', defaultValue: '500' },
+  autoplay:                      { type: 'boolean_string', defaultValue: 'false' },
+  autoplay_delay:                { type: 'number_string', defaultValue: '3000' },
+  loop:                          { type: 'boolean_string', defaultValue: 'false' },
+  block_offset:                  { type: 'number_string', defaultValue: '0' },
+  block_end_offset:              { type: 'number_string', defaultValue: '0' },
+  custom_css_class:              { type: 'string', defaultValue: '' },
 };
 
 /** Fields that are ONLY valid at section level — never in blocks */
@@ -135,6 +156,23 @@ export const SECTION_ONLY_FIELDS = new Set([
   'bg_video',
   'bg_position',
   'background_fixed',
+  // Pro-only slider section fields. NOTE: we deliberately do NOT include
+  // `loop` / `autoplay` here — those are also legitimate fields on `video`
+  // blocks. Adding them to SECTION_FIELD_DEFS above is enough to satisfy
+  // the "block-level field leaked into section" validator.
+  'enable_slider',
+  'blocks_per_slide',
+  'hide_overflow',
+  'slider_preset',
+  'show_arrows',
+  'arrow_slider_margin',
+  'show_dots',
+  'transition_effect',
+  'transition_speed',
+  'autoplay_delay',
+  'block_offset',
+  'block_end_offset',
+  'custom_css_class',
 ]);
 
 // ============================================================

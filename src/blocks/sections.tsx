@@ -13,6 +13,22 @@
  * - footer: copyright, logo, social_icons
  */
 import { Children, Fragment, cloneElement, isValidElement, type ReactElement, type ReactNode, type CSSProperties } from 'react';
+import { Swiper, SwiperSlide } from 'swiper/react';
+import { Autoplay, Navigation, Pagination, EffectFade, EffectCube, EffectCoverflow, EffectFlip } from 'swiper/modules';
+// @ts-expect-error swiper css side-effect imports have no types
+import 'swiper/css';
+// @ts-expect-error
+import 'swiper/css/navigation';
+// @ts-expect-error
+import 'swiper/css/pagination';
+// @ts-expect-error
+import 'swiper/css/effect-fade';
+// @ts-expect-error
+import 'swiper/css/effect-cube';
+// @ts-expect-error
+import 'swiper/css/effect-coverflow';
+// @ts-expect-error
+import 'swiper/css/effect-flip';
 import type { BlockComponent, SectionLayoutProps } from './types';
 import type { SectionComponent } from './serialize';
 
@@ -260,7 +276,7 @@ export const HeaderSection: SectionComponent = (props) => {
       'space-between',
   };
   return (
-    <header style={base}>
+    <header style={base} className={props.customCssClass || undefined}>
       <div style={innerH}>{props.children}</div>
     </header>
   );
@@ -270,10 +286,254 @@ HeaderSection.__allowedBlockTypes = HEADER_ALLOWED;
 
 // ---- ContentSection ----
 
-export const ContentSection: SectionComponent = (props) => {
+/** Flatten ContentSection children into a list of block ReactElements (unwrapping Fragments + BlockWrappers). */
+function flattenBlockChildren(children: ReactNode): ReactNode[] {
+  const out: ReactNode[] = [];
+  Children.forEach(children, (child) => {
+    if (isValidElement(child) && child.type === Fragment) {
+      out.push(...flattenBlockChildren((child.props as { children?: ReactNode }).children));
+      return;
+    }
+    out.push(child);
+  });
+  return out;
+}
+
+function renderSlider(props: SectionLayoutProps, children: ReactNode): ReactNode {
+  const all = flattenBlockChildren(children);
+  const before = Math.max(0, Number(props.blockOffsetBefore) || 0);
+  const after = Math.max(0, Number(props.blockOffsetAfter) || 0);
+  const total = all.length;
+  const sliderEnd = Math.max(before, total - after);
+  const beforeBlocks = all.slice(0, before);
+  const slideBlocks = all.slice(before, sliderEnd);
+  const afterBlocks = all.slice(sliderEnd);
+
+  const desktop = Number(props.slidesPerViewDesktop) || 1;
+  // Pro hardcodes mobile to 1 block per slide — there's no Kajabi setting for it.
+  const mobile = 1;
+  const spaceDesktop = Number(props.spaceBetweenDesktop) || 0;
+  const spaceMobile = Number(props.spaceBetweenMobile) || 0;
+  const effect = props.sliderTransition || 'slide';
+  const modules = [Navigation, Pagination];
+  if (props.sliderAutoplay) modules.push(Autoplay);
+  if (effect === 'fade') modules.push(EffectFade);
+  if (effect === 'cube') modules.push(EffectCube);
+  if (effect === 'coverflow') modules.push(EffectCoverflow);
+  if (effect === 'flip') modules.push(EffectFlip);
+
+  // Pro defaults match Kajabi: arrows + dots both ON unless explicitly disabled.
+  const showArrows = props.showArrows !== false;
+  const showDots = props.showDots !== false;
+  const arrowMargin = Number(props.arrowSliderMargin) || 0;
+  const arrowColor = props.arrowColor || '#1F2A44';
+  const dotColor = props.dotColor || '#1F2A44';
+  // Default to "modern" — matches Kajabi Pro section.liquid's default for
+  // `slider_preset` (dots bottom-left, arrows bottom-right). Authors who want
+  // centered dots/arrows must explicitly set sliderPreset: 'default'.
+  const preset = props.sliderPreset || 'modern';
+  const isModern = preset === 'modern';
+  const wrapClass = `kajabi-slider-wrap slider-preset-${preset}`;
+  const wrapStyle: CSSProperties & Record<string, string> = {
+    position: 'relative',
+    width: '100%',
+    padding: '0 15px',
+    boxSizing: 'border-box',
+    // CSS vars consumed by Swiper's nav + pagination.
+    ['--swiper-navigation-color' as string]: arrowColor,
+    ['--swiper-pagination-color' as string]: dotColor,
+    ['--swiper-pagination-bullet-inactive-color' as string]: dotColor,
+    ['--swiper-pagination-bullet-inactive-opacity' as string]: '0.35',
+  };
+  if (arrowMargin > 0) {
+    wrapStyle.paddingLeft = `${15 + arrowMargin}px`;
+    wrapStyle.paddingRight = `${15 + arrowMargin}px`;
+  }
   return (
-    <section style={buildSectionStyle(props)}>
-      <div style={innerStyle(props)}>{wrapContentChildren(props.children)}</div>
+    <>
+      {beforeBlocks.length > 0 && wrapContentChildren(beforeBlocks)}
+      <div className={wrapClass} style={wrapStyle}>
+        <Swiper
+          modules={modules}
+          slidesPerView={mobile}
+          breakpoints={{ 768: { slidesPerView: desktop, spaceBetween: spaceDesktop } }}
+          spaceBetween={spaceMobile}
+          speed={Number(props.sliderSpeed) || 500}
+          loop={!!props.sliderLoop}
+          effect={effect}
+          fadeEffect={effect === 'fade' ? { crossFade: true } : undefined}
+          autoplay={
+            props.sliderAutoplay
+              ? { delay: Number(props.sliderAutoplayDelay) || 3000, disableOnInteraction: false }
+              : false
+          }
+          navigation={
+            showArrows
+              ? isModern
+                ? { nextEl: '.modern-arrows .swiper-button-next', prevEl: '.modern-arrows .swiper-button-prev', hideOnClick: false, disabledClass: 'swiper-button-disabled' }
+                : { hideOnClick: false, disabledClass: 'swiper-button-disabled' }
+              : false
+          }
+          watchOverflow={false}
+          pagination={
+            showDots
+              ? isModern
+                ? { clickable: true, el: '.modern-dots' }
+                : { clickable: true }
+              : false
+          }
+          style={{ paddingBottom: showDots || (isModern && showArrows) ? 48 : 0 } as CSSProperties}
+        >
+          {slideBlocks.map((b, i) => (
+            <SwiperSlide key={`slide-${i}`} style={{ height: 'auto' }}>
+              <div style={{ height: '100%', display: 'flex' }}>{b}</div>
+            </SwiperSlide>
+          ))}
+        </Swiper>
+        {/*
+          Modern preset moves dots to bottom-left; Swiper's default-pagination
+          stays centered, so we render an external dot container and let Swiper
+          target it via the `el` selector above.
+        */}
+        {isModern && showDots && (
+          <div
+            className="modern-dots"
+            style={{
+              position: 'absolute',
+              bottom: 12,
+              left: 15,
+              textAlign: 'left',
+              zIndex: 2,
+            }}
+          />
+        )}
+        {isModern && showArrows && (
+          <div
+            className="modern-arrows"
+            style={{
+              position: 'absolute',
+              bottom: 4,
+              right: 15,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              zIndex: 2,
+            }}
+          >
+            <button
+              type="button"
+              aria-label="Previous slide"
+              className="swiper-button-prev kajabi-arrow-btn"
+              style={{
+                position: 'static',
+                margin: 0,
+                width: 32,
+                height: 32,
+                padding: 0,
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                color: arrowColor,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                opacity: 1,
+                visibility: 'visible',
+              } as CSSProperties}
+            >
+              <span className="slider-arrow-icon" aria-hidden="true" style={{ display: 'inline-flex', width: 18, height: 18, alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ display: 'block' }}>
+                  <polyline points="15 18 9 12 15 6" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </span>
+            </button>
+            <button
+              type="button"
+              aria-label="Next slide"
+              className="swiper-button-next kajabi-arrow-btn"
+              style={{
+                position: 'static',
+                margin: 0,
+                width: 32,
+                height: 32,
+                padding: 0,
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                color: arrowColor,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                opacity: 1,
+                visibility: 'visible',
+              } as CSSProperties}
+            >
+              <span className="slider-arrow-icon" aria-hidden="true" style={{ display: 'inline-flex', width: 18, height: 18, alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ display: 'block' }}>
+                  <polyline points="9 18 15 12 9 6" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </span>
+            </button>
+          </div>
+        )}
+      </div>
+      {afterBlocks.length > 0 && wrapContentChildren(afterBlocks)}
+    </>
+  );
+}
+
+/**
+ * Group flat block children into N columns based on each block's `column` prop
+ * (1, 2, or 3 — defaults to 1). Mirrors Pro's column_one/two/three.liquid which
+ * filters `section.blocks` by `block.settings.block_column`.
+ */
+function renderColumns(props: SectionLayoutProps, children: ReactNode): ReactNode {
+  const cols = Math.min(Math.max(Number(props.columns) || 1, 2), 3);
+  const widths = props.columnWidths ?? (cols === 3 ? [4, 4, 4] : [4, 4]);
+  const gap = (Number(props.columnGap) || 0) + 15; // matches Liquid: `multiple_column_gap | plus: 15`
+  const flat = flattenBlockChildren(children);
+  const buckets: ReactNode[][] = Array.from({ length: cols }, () => []);
+  for (const node of flat) {
+    let col = 1;
+    if (isValidElement(node)) {
+      const c = Number((node.props as Record<string, unknown>)?.column) || 1;
+      col = Math.min(Math.max(c, 1), cols);
+    }
+    buckets[col - 1].push(node);
+  }
+  const gridTemplate = widths.slice(0, cols).map((w) => `${w}fr`).join(' ');
+  return (
+    <div
+      className="multiple-columns"
+      style={{
+        display: 'grid',
+        gridTemplateColumns: gridTemplate,
+        columnGap: `${gap}px`,
+        rowGap: `${gap}px`,
+        alignItems: props.vertical === 'top' ? 'start' : props.vertical === 'bottom' ? 'end' : 'center',
+      }}
+    >
+      {buckets.map((items, i) => (
+        <div key={`pcol-${i}`} className={['first-column', 'second-column', 'third-column'][i]}>
+          {wrapContentChildren(items)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export const ContentSection: SectionComponent = (props) => {
+  const useSlider = !!props.enableSlider;
+  const useColumns = !!props.columns && props.columns >= 2;
+  return (
+    <section style={buildSectionStyle(props)} className={props.customCssClass || undefined}>
+      <div style={innerStyle(props)}>
+        {useSlider
+          ? renderSlider(props, props.children)
+          : useColumns
+            ? renderColumns(props, props.children)
+            : wrapContentChildren(props.children)}
+      </div>
     </section>
   );
 };
@@ -293,7 +553,7 @@ export const FooterSection: SectionComponent = (props) => {
     flexWrap: 'wrap',
   };
   return (
-    <footer style={buildSectionStyle(props)}>
+    <footer style={buildSectionStyle(props)} className={props.customCssClass || undefined}>
       <div style={inner}>{props.children}</div>
     </footer>
   );

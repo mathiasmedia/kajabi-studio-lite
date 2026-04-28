@@ -34,7 +34,7 @@ export interface FeatureProps extends ChromeProps {
   buttonTextColor?: string;
   buttonBackgroundColor?: string;
   buttonBorderRadius?: string;
-  buttonStyle?: 'solid' | 'outline';
+  buttonStyle?: 'solid' | 'outline' | 'text';
   buttonSize?: 'small' | 'medium' | 'large';
   buttonWidth?: 'auto' | 'full';
   newTab?: boolean;
@@ -57,24 +57,41 @@ export const Feature: BlockComponent<FeatureProps> = (props) => {
       )}
       <div dangerouslySetInnerHTML={{ __html: props.text }} />
       {props.showButton && props.buttonText && (() => {
-        const isOutline = props.buttonStyle === 'outline';
+        const style = props.buttonStyle ?? 'solid';
+        const isOutline = style === 'outline';
+        const isText = style === 'text';
         const sizePad =
           props.buttonSize === 'small' ? '8px 16px' :
           props.buttonSize === 'large' ? '14px 28px' :
           '10px 20px';
+        // Pro `block_cta.liquid` text-button color logic:
+        //   btn_style:'text' + btn_type:'dark'  → color = btn_background_color
+        //   btn_style:'text' + btn_type:'light' → color = btn_text_color
+        // We don't yet expose `btn_type` per-block — default to 'dark' (Kajabi default),
+        // so for text buttons the visible color comes from buttonBackgroundColor.
+        const textBtnColor =
+          props.buttonBackgroundColor || props.buttonTextColor || 'currentColor';
         return (
           <a
+            // .btn so Pro themeSettings button overrides reach the preview.
+            className={`btn btn--${style} btn--${props.buttonSize ?? 'medium'}`}
             href={props.buttonUrl || '#'}
             target={props.newTab ? '_blank' : undefined}
             rel={props.newTab ? 'noopener noreferrer' : undefined}
             style={{
               display: 'inline-block',
               marginTop: 12,
-              padding: sizePad,
-              color: props.buttonTextColor || (isOutline ? '#3B82F6' : '#fff'),
-              backgroundColor: isOutline ? 'transparent' : (props.buttonBackgroundColor || '#3B82F6'),
-              border: isOutline ? `2px solid ${props.buttonBackgroundColor || '#3B82F6'}` : 'none',
-              borderRadius: props.buttonBorderRadius ? `${props.buttonBorderRadius}px` : 4,
+              padding: isText ? '0' : sizePad,
+              color: isText
+                ? textBtnColor
+                : props.buttonTextColor || (isOutline ? 'currentColor' : '#fff'),
+              backgroundColor: isText || isOutline ? 'transparent' : (props.buttonBackgroundColor || '#3B82F6'),
+              border: isText
+                ? 'none'
+                : isOutline
+                  ? `2px solid ${props.buttonBackgroundColor || props.buttonTextColor || 'currentColor'}`
+                  : 'none',
+              borderRadius: isText ? 0 : (props.buttonBorderRadius ? `${props.buttonBorderRadius}px` : 4),
               textDecoration: 'none',
               width: props.buttonWidth === 'full' ? '100%' : 'auto',
             }}

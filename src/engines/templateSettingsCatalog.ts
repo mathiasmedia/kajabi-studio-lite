@@ -279,7 +279,10 @@ export interface TemplateSettingsAuditResult {
   issues: TemplateSettingIssue[];
 }
 
-export function auditTemplateSettings(current: Record<string, unknown>): TemplateSettingsAuditResult {
+export function auditTemplateSettings(
+  current: Record<string, unknown>,
+  knownSettingIds: Set<string> = TEMPLATE_SETTING_IDS,
+): TemplateSettingsAuditResult {
   const issues: TemplateSettingIssue[] = [];
   const unknown: string[] = [];
   let known = 0;
@@ -289,9 +292,11 @@ export function auditTemplateSettings(current: Record<string, unknown>): Templat
     if (STRUCTURAL_KEYS.has(key)) continue;
     if (key.startsWith('content_for_')) continue;
     total++;
-    if (TEMPLATE_SETTING_IDS.has(key)) {
+    if (knownSettingIds.has(key)) {
       known++;
-      const issue = validateTemplateSetting(key, value);
+      const issue = TEMPLATE_SETTING_IDS.has(key)
+        ? validateTemplateSetting(key, value)
+        : null;
       if (issue) issues.push(issue);
     } else {
       unknown.push(key);
