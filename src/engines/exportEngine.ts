@@ -15,7 +15,16 @@
 import JSZip from 'jszip';
 import { validateAndRepairSections, getExportBlockingErrors } from './kajabiFieldSchema';
 import { resolveAssetsForExport, downloadAssetBlob, validateAssets } from './assetManager';
-import { getCachedZip, getCachedValidation, validateBaseTheme, DEFAULT_BASE_THEME, type BaseTheme } from './baseThemeValidator';
+import {
+  getCachedZip,
+  getCachedValidation,
+  validateBaseTheme,
+  type BaseThemeName,
+} from './baseThemeValidator';
+
+const DEFAULT_BASE_THEME: BaseThemeName = 'streamlined-home';
+// Back-compat alias for any local callers that still use the old name.
+type BaseTheme = BaseThemeName;
 import { checkForDefaultFallbacks, runParityAudit, type ParityAuditResult } from './exportParityAudit';
 import { transformForExport, buildArchetypeMap, type TransformReport } from './exportTransforms';
 import { enforceSettingSafety } from './settingSafety';
