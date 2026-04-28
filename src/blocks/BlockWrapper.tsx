@@ -1,5 +1,20 @@
 /**
  * BlockWrapper — visibility + animation hooks only.
+ *
+ * Universal block-level CHROME (background_color, padding, border_radius,
+ * box_shadow, text_align) now lives ON each block component itself via
+ * `blockChrome.ts` — that's the "self-chromed for everyone" contract that
+ * matches Kajabi exactly, so a value present on a block paints the block's
+ * own visible shape rather than a colored band around it.
+ *
+ * What's left here:
+ *   - hide_on_desktop / hide_on_mobile (CSS class breakpoint hiding)
+ *   - both-hidden short-circuit (return null)
+ *   - animation_type stamped as a CSS variable for inspection only —
+ *     the live preview doesn't actually run Kajabi's reveal lib
+ *
+ * If the block has none of those set, we return the original element
+ * unchanged so we don't add an unnecessary DOM node.
  */
 import { isValidElement, useId, type CSSProperties, type ReactElement, type ReactNode } from 'react';
 
@@ -61,6 +76,11 @@ function computeWrapper(values: BlockValues): WrapperShape | null {
   return { style, classes, hidden };
 }
 
+/**
+ * Wrap a block element with visibility/animation chrome only.
+ * Returns the original element unchanged when no relevant fields are set.
+ * Returns null when both hide_on_desktop AND hide_on_mobile are true.
+ */
 export function wrapBlock(element: ReactElement, values: BlockValues, _blockType?: string): ReactNode {
   if (!isValidElement(element)) return element;
   if (!values || typeof values !== 'object') return element;
@@ -82,6 +102,12 @@ export function wrapBlock(element: ReactElement, values: BlockValues, _blockType
   );
 }
 
+/**
+ * Wrap children in a div that optionally applies a per-block font override.
+ * For role='all' the family lands on the div via inline style. For role=
+ * 'heading' / 'body' we scope the rule via a unique class + a tiny <style>
+ * tag so we only retint h1-h6 (or paragraphs), not sibling controls.
+ */
 function FontOverrideWrapper({
   className,
   style,

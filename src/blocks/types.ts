@@ -104,6 +104,15 @@ export interface CommonSectionProps {
    * Falls back to "Header" / "Footer" / "Section" when omitted.
    */
   name?: string;
+
+  // ---- Pro-only (silently dropped on Standard themes) ----
+  /**
+   * Pro-only — space-separated CSS class names attached to the section's
+   * outer element. Combine with `TemplateDef.customCss` to scope bespoke
+   * styling without forking the base theme. Verified: Pro
+   * `sections/section.liquid` reads `section.settings.custom_css_class`.
+   */
+  customCssClass?: string;
 }
 
 /**
@@ -121,6 +130,39 @@ export interface ContentSectionProps extends CommonSectionProps {
   fullWidth?: boolean;
   /** Stretch section to viewport height → settings.full_height */
   fullHeight?: boolean;
+
+  // ---- Pro-only slider (silently dropped on Standard themes) ----
+  /** Pro-only — turns the section's blocks into a Swiper carousel. */
+  enableSlider?: boolean;
+  slidesPerViewDesktop?: number | string;
+  slidesPerViewMobile?: number | string;
+  sliderAutoplay?: boolean;
+  sliderAutoplayDelay?: number | string;
+  sliderSpeed?: number | string;
+  sliderLoop?: boolean;
+  sliderTransition?: 'slide' | 'fade' | 'cube' | 'coverflow' | 'flip';
+  /** Keep N leading blocks OUTSIDE the slider but inside the section. */
+  blockOffsetBefore?: number | string;
+  /** Keep N trailing blocks OUTSIDE the slider but inside the section. */
+  blockOffsetAfter?: number | string;
+  /** Show carousel nav arrows → settings.show_arrows (Pro default true). */
+  showArrows?: boolean;
+  /** Arrow stroke color → settings.arrow_color. */
+  arrowColor?: string;
+  /** Px gap pushing arrows away from slider edge → settings.arrow_slider_margin. */
+  arrowSliderMargin?: number | string;
+  /** Show pagination dots → settings.show_dots (Pro default true). */
+  showDots?: boolean;
+  /** Pagination dot color → settings.dot_color. */
+  dotColor?: string;
+  /**
+   * Slider layout preset → settings.slider_preset.
+   * - "default" (Classic): centered dots & arrows, classic Swiper layout.
+   * - "modern" (Kajabi default): dots bottom-left, arrows bottom-right, on one line below the slider.
+   * This is the ONLY field that controls dot/arrow alignment in Kajabi — there
+   * are no separate `dot_align` / `arrow_align` fields in section.liquid.
+   */
+  sliderPreset?: 'default' | 'modern';
 }
 
 /**
@@ -156,6 +198,12 @@ export interface HeaderSectionProps extends CommonSectionProps {
   closeOnScroll?: boolean;
   /** Mobile menu text alignment → settings.mobile_menu_text_alignment */
   mobileMenuTextAlignment?: 'left' | 'center' | 'right';
+
+  /**
+   * Pro-only — Full-Time Hamburger: forces the mobile slide-in panel to
+   * also show on desktop. Composes with sticky/overlay.
+   */
+  collapsed?: boolean;
 }
 
 /**
