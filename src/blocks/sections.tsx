@@ -386,7 +386,26 @@ function renderSlider(props: SectionLayoutProps, children: ReactNode): ReactNode
         >
           {slideBlocks.map((b, i) => (
             <SwiperSlide key={`slide-${i}`} style={{ height: 'auto' }}>
-              <div style={{ height: '100%', display: 'flex' }}>{b}</div>
+              {/*
+                Kajabi parity: in Pro's `column_one_slider.liquid`, each slide
+                renders the block DIRECTLY inside `<div class="swiper-slide">`
+                — NOT wrapped in `col-md-{width}`. The slide IS the column,
+                and the block fills 100% of the slide regardless of its own
+                `width` prop. Wrapping in wrapContentChildren() (which adds
+                col-md-N flex constraints) was capping a `width: "4"` block
+                at 33% of the slide, so 3 stacked feature blocks rendered
+                tiny instead of full-slide-width.
+              */}
+              {/*
+                Preview-only padding: Kajabi's slider CSS adds horizontal
+                padding inside each `.swiper-slide` (visually 15px-ish per side
+                from the col gutter system). Without it, blocks inside a slider
+                kiss each other edge-to-edge in our preview but have breathing
+                room in Kajabi. 15px all sides keeps preview ↔ Kajabi parity.
+              */}
+              <div style={{ height: '100%', width: '100%', display: 'flex', flexDirection: 'column', padding: '15px', boxSizing: 'border-box' }}>
+                {b}
+              </div>
             </SwiperSlide>
           ))}
         </Swiper>
