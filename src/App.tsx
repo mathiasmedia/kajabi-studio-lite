@@ -5,11 +5,15 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider } from "@/hooks/useAuth";
 import { RequireAuth } from "@/components/RequireAuth";
-import Index from "./pages/Index";
-import Auth from "./pages/Auth";
-import ResetPassword from "./pages/ResetPassword";
-import SiteEditor from "./pages/SiteEditor";
-import NotFound from "./pages/NotFound";
+import Index from "./pages/Index.tsx";
+// LandingPagesDashboard is no longer routed — the unified workspace at "/" shows
+// both websites and landing pages. The file is kept for thin-client sync compat.
+
+import SiteEditor from "./pages/SiteEditor.tsx";
+import Auth from "./pages/Auth.tsx";
+import ResetPassword from "./pages/ResetPassword.tsx";
+import Admin from "./pages/Admin.tsx";
+import NotFound from "./pages/NotFound.tsx";
 
 const queryClient = new QueryClient();
 
@@ -41,7 +45,19 @@ const App = () => (
                 </RequireAuth>
               }
             />
+            <Route
+              path="/admin"
+              element={
+                <RequireAuth>
+                  <Admin />
+                </RequireAuth>
+              }
+            />
+            {/* Legacy /admin/users → /admin */}
+            <Route path="/admin/users" element={<Navigate to="/admin" replace />} />
+            {/* Legacy /export route → bounce to dashboard */}
             <Route path="/export" element={<Navigate to="/" replace />} />
+            {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>
         </AuthProvider>
