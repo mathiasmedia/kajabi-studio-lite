@@ -375,12 +375,18 @@ function validateZipShape(zip: JSZip, rootPrefix: string): { valid: boolean; iss
 
 // ---- Main export ----
 
+export interface ExportThemeZipOptions {
+  /** Which Kajabi base theme to merge into. Defaults to 'streamlined-home'. */
+  baseTheme?: BaseThemeName;
+}
+
 export async function exportThemeZip(
   settingsData: Record<string, unknown>,
   projectAssets: ProjectAsset[] = [],
   visualPlan?: VisualPlanV1,
-  baseTheme: BaseTheme = DEFAULT_BASE_THEME,
+  options: ExportThemeZipOptions = {},
 ): Promise<Blob> {
+  const baseTheme: BaseThemeName = options.baseTheme ?? DEFAULT_BASE_THEME;
   // Structural validation of generated data
   const validation = validateSettingsData(settingsData);
   if (!validation.valid) {
