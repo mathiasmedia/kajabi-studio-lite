@@ -1,13 +1,7 @@
 /**
- * Base Theme Validator — Validates base theme zip availability, structure,
- * and readiness before export workflows depend on it.
- *
- * Fail-early principle: detect missing/invalid base theme at generation time,
- * not at export time.
+ * Base Theme Validator
  */
 import JSZip from 'jszip';
-
-// ─── Types ─────────────────────────────────────────────────
 
 export type BaseThemeHealth = 'ready' | 'invalid' | 'missing' | 'checking';
 
@@ -23,8 +17,6 @@ export interface BaseThemeDiagnostic {
   code: string;
   message: string;
 }
-
-// ─── Constants ─────────────────────────────────────────────
 
 export type BaseThemeName =
   | 'streamlined-home'
@@ -57,11 +49,15 @@ function isJunkFile(path: string): boolean {
 const cachedValidationByTheme = new Map<BaseThemeName, BaseThemeValidation>();
 const cachedZipByTheme = new Map<BaseThemeName, JSZip>();
 
-export function getCachedValidation(theme: BaseThemeName = 'streamlined-home'): BaseThemeValidation | null {
+export function getCachedValidation(
+  theme: BaseThemeName = 'streamlined-home',
+): BaseThemeValidation | null {
   return cachedValidationByTheme.get(theme) ?? null;
 }
 
-export function getCachedZip(theme: BaseThemeName = 'streamlined-home'): JSZip | null {
+export function getCachedZip(
+  theme: BaseThemeName = 'streamlined-home',
+): JSZip | null {
   return cachedZipByTheme.get(theme) ?? null;
 }
 
@@ -220,12 +216,11 @@ export async function validateBaseTheme(
   return result;
 }
 
-export function getBaseThemeHealth(theme: BaseThemeName = 'streamlined-home'): BaseThemeHealth {
+export function getBaseThemeHealth(
+  theme: BaseThemeName = 'streamlined-home',
+): BaseThemeHealth {
   const cached = cachedValidationByTheme.get(theme);
   if (cached) return cached.health;
   validateBaseTheme(theme).catch(() => {});
   return 'checking';
 }
-
-// Backwards-compat alias for older callers.
-export type BaseTheme = BaseThemeName;

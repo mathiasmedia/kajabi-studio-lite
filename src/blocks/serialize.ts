@@ -12,7 +12,6 @@ import type {
 } from './types';
 import { SECTION_FLAVOR_TO_KAJABI_TYPE } from './types';
 
-// ---- ID generation ----
 let idCounter = 0;
 let idSeed = 0;
 
@@ -29,20 +28,17 @@ function nextSectionId(): string {
   return nextNumericId();
 }
 
-// ---- External background-image override collection ----
-//
-// Kajabi's `bg_image` field is an `image_picker` — its value is run through
-// the `image_picker_url` Liquid filter, which assumes an internal Kajabi
-// asset id. When we save an external URL straight into `bg_image`, that
-// filter mangles the URL into a broken proxy URL. Workaround: keep
-// `bg_type: 'image'` so section.liquid still renders the overlay + sizing
-// branch, but blank `bg_image` and inject a real CSS rule into current.css.
 export interface SectionBackgroundOverride {
   url: string;
   position: string;
   fixed: boolean;
 }
 let externalBgOverrides = new Map<string, SectionBackgroundOverride>();
+
+let activeBaseTheme: string | undefined;
+function isProTheme(): boolean {
+  return !!activeBaseTheme && activeBaseTheme.endsWith('-pro');
+}
 
 function isExternalImageUrl(url: string): boolean {
   if (!url) return false;
@@ -52,14 +48,11 @@ function isExternalImageUrl(url: string): boolean {
   return /^(https?:|data:|blob:)/i.test(url);
 }
 
-// ---- Section component marker ----
 export interface SectionComponent {
   (props: { children?: ReactNode } & SectionLayoutProps): JSX.Element | null;
   __kajabiSectionFlavor: SectionFlavor;
   __allowedBlockTypes: Set<string>;
 }
-
-// ---- Settings assembly helpers ----
 
 function paddingToKajabi(p?: PaddingObject): Record<string, string> | undefined {
   if (!p) return undefined;
@@ -92,7 +85,6 @@ const SECTION_DEFAULTS: Record<string, unknown> = {
 function buildSectionSettings(layout: SectionLayoutProps, flavor: SectionFlavor): Record<string, unknown> {
   const settings: Record<string, unknown> = { ...SECTION_DEFAULTS };
 
-  // ---- Background w/ safety-net demotion ----
   const hasImgUrl = typeof layout.backgroundImage === 'string' && layout.backgroundImage.length > 0;
   const hasVidUrl = typeof layout.backgroundVideo === 'string' && layout.backgroundVideo.length > 0;
   let effectiveBgType = layout.bgType;
@@ -113,7 +105,9 @@ function buildSectionSettings(layout: SectionLayoutProps, flavor: SectionFlavor)
   } else if (layout.background) {
     settings.bg_type = 'color';
   }
-  if (layout.backgroundImage) settings.bg_image = layout.backgroundImage;
+  if (layout.backgroundImage) {
+    settings.bg_image = layout.backgroundImage;
+  }
   if (layout.backgroundVideo) settings.bg_video = layout.backgroundVideo;
   if (layout.bgPosition) settings.bg_position = layout.bgPosition;
   if (layout.backgroundFixed) settings.background_fixed = 'true';
@@ -135,6 +129,32 @@ function buildSectionSettings(layout: SectionLayoutProps, flavor: SectionFlavor)
     if (layout.equalHeight) settings.equal_height = 'true';
     if (layout.fullWidth) settings.full_width = 'true';
     if (layout.fullHeight) settings.full_height = 'true';
+
+    if (isProTheme()) {
+      if (layout.enableSlider) {
+        settings.enable_slider = 'true';
+        if (layout.slidesPerViewDesktop != null) settings.blocks_per_slide = String(layout.slidesPerViewDesktop);
+        if (layout.sliderAutoplay) settings.autoplay = 'true';
+        if (layout.sliderAutoplayDelay != null) settings.autoplay_delay = String(layout.sliderAutoplayDelay);
+        if (layout.sliderSpeed != null) settings.transition_speed = String(layout.sliderSpeed);
+        if (layout.sliderLoop) settings.loop = 'true';
+        if (layout.sliderTransition) settings.transition_effect = layout.sliderTransition;
+        if (layout.blockOffsetBefore != null) settings.block_offset = String(layout.blockOffsetBefore);
+        if (layout.blockOffsetAfter != null) settings.block_end_offset = String(layout.blockOffsetAfter);
+        if (layout.showArrows === false) settings.show_arrows = 'false';
+        else if (layout.showArrows === true) settings.show_arrows = 'true';
+        if (layout.arrowColor) settings.arrow_color = layout.arrowColor;
+        if (layout.arrowSliderMargin != null) settings.arrow_slider_margin = String(layout.arrowSliderMargin);
+        if (layout.showDots === false) settings.show_dots = 'false';
+        else if (layout.showDots === true) settings.show_dots = 'true';
+        if (layout.dotColor) settings.dot_color = layout.dotColor;
+        if (layout.sliderPreset) settings.slider_preset = layout.sliderPreset;
+      }
+    }
+  }
+
+  if (isProTheme()) {
+    if (layout.customCssClass) settings.custom_css_class = layout.customCssClass;
   }
 
   if (flavor === 'header') {
@@ -163,6 +183,10 @@ function buildSectionSettings(layout: SectionLayoutProps, flavor: SectionFlavor)
     if (layout.stickyHamburgerColor) settings.sticky_hamburger_color = layout.stickyHamburgerColor;
     if (layout.closeOnScroll != null) settings.close_on_scroll = layout.closeOnScroll ? 'true' : 'false';
     if (layout.mobileMenuTextAlignment) settings.mobile_menu_text_alignment = layout.mobileMenuTextAlignment;
+
+    if (isProTheme()) {
+      if (layout.collapsed) settings.collapsed = 'true';
+    }
   }
 
   if (flavor === 'footer') {
@@ -322,8 +346,6 @@ function walkSection(el: ReactElement): SerializedSection {
   };
 }
 
-// ---- Public API ----
-
 export interface SerializeTreeResult {
   settingsData: Record<string, unknown>;
   externalBackgrounds: Map<string, SectionBackgroundOverride>;
@@ -339,7 +361,6 @@ export const SYSTEM_TEMPLATES = [
 ] as const;
 export type SystemTemplate = typeof SYSTEM_TEMPLATES[number];
 
-/** @deprecated kept for backward compatibility — use SYSTEM_TEMPLATES. */
 export const SUPPORTED_TEMPLATES = SYSTEM_TEMPLATES;
 export type SupportedTemplate = SystemTemplate;
 
@@ -359,10 +380,18 @@ function isPageTreesMap(input: ReactNode | PageTrees): input is PageTrees {
   return true;
 }
 
-export function serializeTree(input: ReactNode | PageTrees): SerializeTreeResult {
+export interface SerializeTreeOptions {
+  baseTheme?: string;
+}
+
+export function serializeTree(
+  input: ReactNode | PageTrees,
+  options: SerializeTreeOptions = {},
+): SerializeTreeResult {
   idCounter = 0;
   idSeed = Date.now();
   externalBgOverrides = new Map();
+  activeBaseTheme = options.baseTheme;
 
   const sections: Record<string, KajabiSection> = {};
   const contentForByTemplate: Record<string, string[]> = {};
