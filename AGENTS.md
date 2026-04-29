@@ -630,7 +630,52 @@ The engine accepts both shorthand (`blocksPerSlide`, `autoplay`, `loop`, `transi
 
 If you're adding a NEW slider prop, register both the alias and the canonical name in `sections.tsx → renderSlider` AND `serialize.ts` simultaneously — a missed alias silently falls back to a 1-per-slide, autoplay-off slider. See `mem://reference/slider-prop-shorthand-aliases.md`.
 
+### 4.22 Pro templates — set EVERY font weight + size explicitly (never rely on defaults)
+
+🚨 **Common parity bug: preview h1 looks heavier than Kajabi's h1**, even though family + size match. Cause: the template set ONE override (e.g. `custom_h2_font_weight: "500"`) and left h1/h3/etc. to fall back. The preview's `valWithDefault` resolves the catalog default (`font_weight_heading: "700"`), but Kajabi's actual default for the loaded font (especially serif/display fonts like Playfair Display, Lora, Cormorant) is often 500 or 600, NOT 700. So preview renders 700 and Kajabi renders 500 — same family, same size, different weight.
+
+**The rule — every Pro template's `themeSettings` MUST explicitly set:**
+
+**Standard fields (sitewide fallback for Kajabi system pages too):**
+- `font_weight_heading`, `line_height_heading`
+- `font_weight_body`, `line_height_body`
+
+**Pro per-element overrides — for EVERY heading level the template renders on any page** (`use_custom_fonts: "true"` flow):
+- `override_h<N>_font_styles: "true"` (visibility toggle)
+- `select_custom_h<N>_font: "primary" | "accent" | "inherit"`
+- `custom_h<N>_font_weight: "500"` (explicit number, NOT `"inherit"`)
+- `custom_h<N>_line-height: "1.1"` (hyphen, not underscore)
+- `custom_h<N>_font_size_desktop: "52px"`
+- `custom_h<N>_font_size_mobile: "34px"`
+
+**Body:**
+- `override_body_fonts: "true"`
+- `custom_body_font_weight: "400"`
+- `custom_body_font_line-height: "1.6"`
+- `custom_body_font_size_desktop: "17px"`
+- `custom_body_font_size_mobile: "16px"`
+
+**Buttons (when CTAs matter):**
+- `view_advanced_button_customizations: "true"`
+- `btn_font_weight: "500"`
+- `custom_button_font_size_desktop: "14px"` + `custom_button_font_size_mobile: "13px"`
+
+**Don't use `"inherit"` for typography the template designed.** `"inherit"` means "use the cascade" — and the cascade differs between preview (catalog defaults) and Kajabi (loaded font's actual defaults). Reserve `"inherit"` only for fields the template genuinely doesn't care about.
+
+**Pre-flight checklist — every Pro template build (and every existing Pro template audit):**
+1. Walk every page in the template; collect the set of heading levels actually rendered (h1, h2, h3, …).
+2. For EACH level, confirm `override_h<N>_font_styles: "true"` + weight + line-height + desktop size + mobile size are all set explicitly.
+3. Confirm Standard `font_weight_heading` + `font_weight_body` + line-heights are set.
+4. Confirm body overrides are set (weight + lh + sizes).
+5. Confirm button advanced overrides are set if any CTAs exist.
+6. Refresh preview, compare to a Kajabi export side-by-side — every heading should match weight exactly.
+
+**🚨 Common silent gap (verified 2026-04 on the Pro Functionality site):** the per-heading overrides (`custom_h1_font_weight`, etc.) can all be set correctly while the **Standard sitewide fallback fields** (`font_weight_heading`, `line_height_heading`, `font_weight_body`, `line_height_body`) are still `undefined`. Per-element overrides only target `h1/h2/h3...` rendered through composed sections; the Standard fields are what Kajabi system pages (login, store, checkout, blog) and the preview's Standard fallback path use. If they're undefined, those pages render with Kajabi's base-theme defaults (heading 700, body 400/1.6) which usually diverges from the brand. **The audit MUST check both layers** — per-element overrides AND Standard sitewide fields. Set the Standard fields to match the per-element values (e.g. heading 500/1.1, body 400/1.7) so system pages inherit the brand consistently.
+
+See `mem://reference/template-explicit-font-weights.md` for full anti-pattern + worked example.
+
 ---
+
 
 
 ## 5. How to talk to the expert
@@ -1339,7 +1384,7 @@ Bold variant: `override_h1_bold_font_styles` toggle, then `select_custom_bold_h1
 
 When the expert asks "make the buttons match" / "fix the typography" / "the heading line-height feels off" / "tighten the form fields" — do this checklist:
 
-1. **Audit existing inline CSS first.** `get-site-design` → walk every block → grep block HTML for `style="font-`, `style="line-height`, `style="letter-spacing`, `style="text-transform`, `padding:`, `font-size:`, `font-family:`. **Every match is a candidate for deletion** in favor of a `themeSettings` override.
+1. **Audit existing inline CSS first.** `get-site-design` → walk every block → grep block HTML for `style="font-`, `style="line-height`, `style="letter-spacing`, `style="text-transform"`, `padding:`, `font-size:`, `font-family:`. **Every match is a candidate for deletion** in favor of a `themeSettings` override.
 2. **Lift recurring inline rules into `themeSettings`.** If you see the same `font-family: 'Playfair Display'` in 6 headings, that belongs in `themeSettings` (`use_custom_fonts: "true"`, `use_primary_custom_font: "true"`, `primary_custom_font_name: "Playfair Display"`, `select_custom_h1_font: "primary"` etc.) — not repeated inline.
 3. **Lift recurring inline button styles into `themeSettings`.** If every CTA carries inline `padding: 16px 32px; text-transform: uppercase; letter-spacing: 2px`, that's the global button system speaking — set `view_advanced_button_customizations: "true"`, `btn_uppercase: "on"`, `btn_letter-spacing: "2px"`, `button_vertical_padding: "16px"`, `button_horizontal_padding: "32px"`. Then **delete the inline declarations**.
 4. **Match the dark/light pair model (§9.8a).** Pick the brand pair ONCE (`btn_background_color` = dark member, `btn_text_color` = light member). Per-CTA, set `btn_type: "dark"` or `"light"` to choose which one renders. Don't set per-block `buttonBackgroundColor` / `buttonTextColor` unless the block genuinely uses an off-brand color.
@@ -1442,7 +1487,6 @@ Add incrementally when an expert actually needs one:
 3. Add field defaults to `src/blocks/blockDefaults.ts`.
 4. Add serializer in `src/blocks/serialize.ts` mapping React props → Kajabi `block.settings.*`.
 5. Add field schema entry in `src/engines/kajabiFieldSchema.ts` with `proOnly: true`.
-
 6. Update `getTemplateCapabilities()` so Standard-themed sites reject the block.
 
 Don't expose all Pro blocks speculatively.
