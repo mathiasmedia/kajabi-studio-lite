@@ -591,6 +591,47 @@ When a card-style block (`feature`, `pricing_card`, etc.) needs an "Explore →"
 
 ---
 
+### 4.18 Preview ↔ Kajabi shadow parity (verified 2026-04)
+
+The engine's `SHADOW_MAP` in `packages/engine/src/blocks/blockChrome.ts` MUST emit Kajabi's exact `box-shadow-{small|medium|large}` class values from `streamlined-home(-pro)/assets/styles.scss.liquid` lines 3052–3070:
+
+- `small`: `0 2px 10px 0 rgba(0, 0, 0, 0.05)`
+- `medium`: `0 4px 20px 0 rgba(0, 0, 0, 0.075)`
+- `large`: `0 10px 40px 0 rgba(0, 0, 0, 0.1)`
+
+These are SINGLE soft shadows, not double-layered Material-style shadows. If you change them to "look better" you'll silently desync the editor preview from the live Kajabi render. Symptom: accordion/card edges look heavier, sharper, or more dramatic in the preview than in the exported site. Whenever the expert reports "the shadow doesn't quite match what shipped", check this file first.
+
+If Kajabi ever updates these class values in a future base-theme version, re-extract from the current zip and update `SHADOW_MAP` in lockstep.
+
+### 4.19 PricingCard auto-themes for dark surfaces (verified 2026-04)
+
+`packages/engine/src/blocks/components/PricingCard.tsx` ships an `isDarkColor(hex|rgba)` helper that calculates luminance from the card's background and toggles:
+- `ink` → light (`#F4ECDC`) on dark surfaces, dark (`#111`) on light
+- `muted` → matching translucent
+
+Without this branching, dark-surface tier cards (e.g. a brand-color middle tier in a 3-up pricing grid) render black bullets/checkmarks/body copy on a near-black background — invisible. Same with the button: the outline branch MUST set `backgroundColor: 'transparent'` + `border: '1.5px solid {buttonBackground}'`, NOT default to a solid fill.
+
+`PricingCardProps` includes `buttonStyle: 'solid' | 'outline' | 'text'` and `buttonBorderRadius`. Always persist these on every `pricing_card` block in `design`, especially when authoring multi-tier grids where the highlighted tier inverts the palette. If the bullets/CTAs disappear on the highlighted tier, the regression is in the `isDarkColor` branch or the outline button renderer.
+
+### 4.20 Slider `transitionEffect: "fade"` stacks all blocks regardless of `blocksPerSlide`
+
+Swiper's `fade` effect crossfades between full-width slides — `blocksPerSlide` is effectively forced to 1 even if you set 3. Symptom: a testimonial slider with `blocksPerSlide: 3` + `transitionEffect: "fade"` shows ONE testimonial at a time, looking broken next to a sibling slider with the same `blocksPerSlide: 3` + `slide` effect that correctly renders 3-up.
+
+**Rules:**
+- Want a multi-up grid carousel → `transitionEffect: "slide"` (default) + `blocksPerSlide: 3` (or whatever).
+- Want fullscreen testimonial crossfade → `transitionEffect: "fade"` + `blocksPerSlide: 1`.
+- Never mix `fade` with `blocksPerSlide > 1` — the value is silently ignored and the section looks broken.
+
+Also: Pro's `section.liquid` forgets to set `fadeEffect.crossFade: true`, so even valid fade sliders need the CSS workaround that `export.ts` auto-injects when any section uses `transition_effect: "fade"`. Don't disable that workaround.
+
+### 4.21 Slider prop shorthand aliases — write the canonical name
+
+The engine accepts both shorthand (`blocksPerSlide`, `autoplay`, `loop`, `transitionEffect`, `transitionSpeed`) and canonical (`slidesPerViewDesktop`, `sliderAutoplay`, `sliderLoop`, `sliderTransition`, `sliderSpeed`) names — both `renderSlider` (in `sections.tsx`) and the serializer normalize via nullish coalescing. **Prefer the canonical name** in new code so future devs reading the JSON aren't confused; the shorthands exist only because legacy site data uses them.
+
+If you're adding a NEW slider prop, register both the alias and the canonical name in `sections.tsx → renderSlider` AND `serialize.ts` simultaneously — a missed alias silently falls back to a 1-per-slide, autoplay-off slider. See `mem://reference/slider-prop-shorthand-aliases.md`.
+
+---
+
 
 ## 5. How to talk to the expert
 
@@ -1211,6 +1252,8 @@ Per-form overrides: every field above has a per-block override with the same `"i
 5. **Bold-per-element** override (e.g. `override_h3_bold_font_styles: true`) — beats per-element for the `strong` variant.
 6. **Block-level** overrides on `cta` / form blocks — beat all template-level button/form settings.
 
+**Standard Style Guide defaults must be honored as fallbacks (preview parity).** When the expert leaves Standard fields like `font_weight_heading`, `line_height_heading`, `font_size_h1_desktop`, `font_size_h1_mobile` (and h2–h6), `font_weight_body`, `line_height_body` empty, Kajabi falls back to **base-theme defaults** (headings 700, h1 48px desktop / 36px mobile, etc.) — NOT to browser UA defaults. The preview engine (`packages/engine/src/siteDesign/resolvePreviewFonts.ts → buildStandardThemeRules`) MUST therefore read each Standard field via `valWithDefault(ts, key)` which falls through to `TEMPLATE_SETTINGS_BY_ID[key].default` from `templateSettingsCatalog.ts`, and emit a CSS rule whenever the resolved value is non-empty. Without this, preview headings collapse to UA `h1 ≈ 32px` while the exported Kajabi site renders 48px — the expert reports "the headings look fine in Kajabi but tiny in the preview" (or vice-versa after they strip an inline `font-size`). Heading weight rules MUST also target `:is(h1..h6) strong` so inline `<strong>` inherits the heading weight instead of body weight. Per-heading desktop+mobile sizes go inside `@media (min-width: 768px)` / `@media (max-width: 767px)` blocks. This is preview-only plumbing; export is unaffected because Kajabi's runtime CSS already handles the fallbacks server-side.
+
 **Visibility toggles (`hide_if`) — flip them when you emit overrides.** Most override fields have `hide_if: { <toggle_id>: false }`. The toggle controls **whether the field is visible in the Kajabi page builder**, not whether it's emitted. **Whenever you emit any field under a toggle, you MUST also flip the toggle to `true`** — otherwise the expert opens Kajabi and can't see/edit the values you wrote.
 
 | Toggle ID (default `false`) | Unlocks |
@@ -1399,6 +1442,7 @@ Add incrementally when an expert actually needs one:
 3. Add field defaults to `src/blocks/blockDefaults.ts`.
 4. Add serializer in `src/blocks/serialize.ts` mapping React props → Kajabi `block.settings.*`.
 5. Add field schema entry in `src/engines/kajabiFieldSchema.ts` with `proOnly: true`.
-6. Update `getTemplateCapabilities()` so Standard-headed sites reject the block.
+
+6. Update `getTemplateCapabilities()` so Standard-themed sites reject the block.
 
 Don't expose all Pro blocks speculatively.
