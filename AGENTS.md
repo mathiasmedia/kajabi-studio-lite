@@ -674,6 +674,104 @@ If you're adding a NEW slider prop, register both the alias and the canonical na
 
 See `mem://reference/template-explicit-font-weights.md` for full anti-pattern + worked example.
 
+### 4.23 NEVER place white blocks on white sections — they vanish into the page
+
+🚨 **Verified 2026-04 on the Pro Functionality landing page.** A `pricing_card` or `accordion` (or any chrome-bearing block) with `backgroundColor: "#FFFFFF"` placed inside a section whose `background` is also white renders on Kajabi as a **borderless rectangle that bleeds into the page** — the card's only edge is the small `box-shadow` (per §4.18, single soft shadow at 5–10% alpha), which is too subtle to define a boundary on a pure-white surround. The expert sees: "the cards have no edges", "everything looks like one flat white blob", "the accordions don't look like cards anymore." Outer pricing tiers in a 3-up grid are the most common offender (the dark middle "highlight" tier is fine — it has its own contrast).
+
+**The rule — never ship a white-bg block on a white-bg section. THINK LIKE A DESIGNER, not a bug-fixer.** The fix is to make the **card itself** a deliberate object on the page — not to recolor the room around it. Tinting whole sections to "make the cards visible" is a reactive, blotchy move: it creates an inconsistent page palette where some sections are cream and others are white for no compositional reason, just because of which blocks happen to live inside them.
+
+**Default fix — tint the BLOCK, not the section.** Pick a warm ivory / off-white that comes from the SAME brand family as the site's accent colors (e.g. if the site has a navy + gold palette, use a warm ivory like `#FBF6EC` that pairs with the gold; if it's a cool grey palette, use `#F7F8FA` that pairs with the slate). The card becomes a deliberate light-register object on a clean white page, and every section keeps its rhythm. Same pattern as the dark "highlight" tier in a 3-up pricing grid — that tier is its own object too; the light tiers should be too, just in the light register.
+
+Order of preference (use the first one that fits the page composition):
+
+1. **Tint the block background** to a warm/cool off-white from the brand family (e.g. `backgroundColor: "#FBF6EC"` on warm palettes, `#F7F8FA` on cool palettes). **DEFAULT CHOICE** — keeps section rhythm intact, treats the card as a designed object, harmonizes with dark highlight tiers in the same grid.
+2. **Add a hairline border to the block** that harmonizes with the brand (e.g. `border: "1px solid #E8E2D4"` on warm, `1px solid rgba(0,0,0,0.08)` on cool). Use when the brand is so minimal/monochrome that even a subtle block tint would feel heavy. ⚠️ Engine caveat: the chrome serializer does NOT currently emit `border` to Kajabi (only `border_radius`/`background`/`shadow`/`padding`) — so a `border` value renders in the editor preview but is dropped on export. Until that's fixed in `blockChrome.ts`, treat the border option as preview-only and prefer option 1.
+3. **Tint the section background** to a soft off-white. **LAST RESORT** — only when (a) the section is the ONLY content section on the page, OR (b) tinting it actually improves the page rhythm (e.g. an "alternating bands" layout where every other section is already tinted by design). NEVER tint a single isolated section just because it happens to contain a white card — that creates the blotchy palette this rule exists to prevent.
+
+Never rely on shadow alone — the verified Kajabi shadows (§4.18) are too gentle to substitute for an edge on white-on-white.
+
+**Anti-pattern (do NOT do this):** "I see three sections with white cards on white backgrounds — I'll tint those three sections cream and leave the others white." This produces a page with no compositional reason for which sections are cream vs white. The expert will (correctly) call it out as an afterthought. Tint the blocks instead — every section stays white, every card pops on its own merit.
+
+**Same rule applies to:** `pricing_card`, `accordion`, `feature` cards, `card`, any block whose visual identity is "a contained tile". Does NOT apply to `text`, `cta`, `image`, `logo` etc. (no chrome to define).
+
+**Pre-flight check before saving any page:** for every `content` section whose `background` is white (`#FFF`/`#FFFFFF`/`white`/`rgb(255,255,255)`), walk the section's blocks. If any chrome-bearing block (`pricing_card`, `accordion`, `feature`, `card`) has `backgroundColor` also white AND `border` is empty, **tint the BLOCK** to a brand-family off-white (option 1 above). Reach for section tinting (option 3) ONLY if you can articulate a compositional reason — "this is the only content section on the page" or "the page already alternates tinted/white bands by design". If the only reason is "the card was invisible", you're doing option 3 wrong; use option 1.
+
+The PricingCard component itself defaults `border` to `1px solid rgba(0,0,0,0.06)` when no chrome border is set — but `serializeChromeProps` only emits the `border` field when explicitly authored. So the **preview** masks the bug, and **export to Kajabi** ships borderless cards. The fix lives in the design JSON, not the component default.
+
+---
+
+### 4.24 CLONING A REFERENCE SITE — map first, build second (mandatory workflow)
+
+🚨 **The single biggest source of "this has been brutal" sessions.** When the expert points at a URL and says "clone this", "match this site", "build me a site like X", "make it look like [URL]", or pastes a URL of their old site and asks you to rebuild it on Kajabi — **DO NOT design from screenshots and vibes**. That path leads to 10+ correction passes (verified across multiple painful sessions: missing sections, invented colors, AI-generated images where the source had real photos, mismatched buttons, "the colors below the fold are still wrong"). The fix is a hard procedure.
+
+**Trigger phrases (any of these = use this workflow):** "clone https://...", "match this site", "build me a site like X", "make it look like [URL]", "use this as inspiration" + URL, "this is my old site, rebuild it on Kajabi", "I want my Kajabi site to look like my Squarespace at [URL]", "clone this landing page".
+
+#### Phase 0 — Decide kind: WEBSITE (multi-page) vs LANDING PAGE (single page)
+
+Before you map anything, know which mode you're in. The site you're editing already has a `kind` (`'site'` or `'landing_page'`) — read it from `get-site-design`. **Match the existing site's kind:**
+
+- **`kind: 'site'`** (multi-page Kajabi website) → clone EVERY page from the source. Use `index`, `about`, `contact`, `programs` etc. as page keys. Phase 1 maps the whole domain.
+- **`kind: 'landing_page'`** (single-page export) → clone ONLY the source's homepage (or whichever single page the URL points at). Everything goes under the `index` page key. Even if the source has 8 pages, you collapse to one — pick the most relevant page (the URL the expert pasted) and ignore the rest unless they explicitly ask for an inner page.
+
+If the expert asks "clone https://..." in chat without an existing site selected, ask exactly one question: **"Should this be a full multi-page website or a single landing page?"** Then have them create the site via the New menu (Website or Landing page) and resume from Phase 1 inside that site.
+
+#### Phase 1 — MAP the source FIRST (no design work yet)
+
+Use Firecrawl (already wired in every thin client). For the page(s) you're cloning:
+
+1. **`map`** the domain → discover all inner pages (about, services, contact, programs, etc.). **For `kind: 'site'`:** confirm with the expert which pages to include in the clone. **For `kind: 'landing_page'`:** skip `map` entirely — go straight to `scrape` on the single source URL.
+2. **`scrape`** each page with `formats: ['markdown', 'screenshot', 'links', 'branding']`:
+   - `markdown` → verbatim copy (every headline, body paragraph, list item, CTA label, form label, footer copyright).
+   - `screenshot` → visual reference, you'll consult it section-by-section while building.
+   - `links` → all image URLs + outbound links.
+   - `branding` → exact colors (primary/secondary/accent/bg/text), fonts (heading + body family), logo URL.
+3. **Write a Match Brief** to `/tmp/clone-brief.md` with:
+   - **Brand tokens at the top:** primary, secondary, accent, bg, text colors (hex from `branding`); heading font + body font (from `branding.fonts` or screenshot inspection); logo URL.
+   - **Per page**, an ordered list of sections — for each section: layout (split? full-width? grid count? slider?), copy verbatim, image URL(s), background color (sampled from screenshot or `branding`), text color, CTA labels + URLs.
+   - Example: "1. Sticky header (logo left, nav center, CTA right). 2. Hero: full-bleed image bg `https://.../hero.jpg` + h1 `Build Your Practice` + subhead + 2 CTAs. 3. Stats band — 3 numbers on cream `#F8F4EC`. 4. Services 3-up grid with photos. 5. Testimonial slider. 6. Footer."
+4. **Show the Match Brief to the expert** and ask exactly one question: "Here's what I see — N pages, this section breakdown, these colors, these fonts. Anything to change before I build?" Do NOT ask implementation questions. Wait for approval.
+
+#### Phase 2 — DOWNLOAD the real assets
+
+For every image referenced in the Match Brief:
+
+1. Download via `curl` (URLs are already in the Brief from Firecrawl's `links` array).
+2. Upload to the site via the `upload-site-image` edge function (per §4.14) → get back a permanent `https://...supabase.co/.../site-images/...` URL.
+3. Wire that URL directly into the relevant section/block prop (`backgroundImage`, `src`, `logoSrc`).
+
+**🛑 NEVER call `generate-site-image` to invent a "similar" image when the source has a real one.** The expert's reference site has THEIR photos (or the photos they specifically chose) — use them. AI-generated stand-ins are immediately recognizable as wrong and the expert will (correctly) ask why their real headshot/team photo/venue isn't there. Only use `generate-site-image` for sections the source genuinely doesn't have an image for AND the expert explicitly asks for one.
+
+#### Phase 3 — BUILD page-by-page, hero first, STOP for approval
+
+1. Build the homepage: header + hero ONLY. Save via `update-site-design`.
+2. **STOP.** Tell the expert: "Hero is built — refresh and confirm before I continue." Do NOT speculatively build the entire site before any approval gate.
+3. After approval, build the rest of the homepage section-by-section, in source order, with verbatim copy and the real image URLs from Phase 2.
+4. After homepage is approved, repeat for each inner page in the same order: section-by-section, verbatim copy, real images.
+
+#### Phase 4 — Hard constraints during build
+
+- **No invented sections.** If the source has 6 sections, the clone has 6 sections matching the source's layout. Do not add a "while we're here" CTA section, a "what about a stats band?" section, or any section the source doesn't have. The expert can ask for additions later.
+- **No invented colors.** Every color comes from the Match Brief's brand tokens. If a section needs a tint, derive it from the brand palette (lighten/darken via opacity), don't introduce a new hue.
+- **No invented fonts.** Use the heading + body font identified in `branding`. If unavailable on Google Fonts, pick the closest match and tell the expert.
+- **Verbatim copy.** Use the source's exact copy unless the expert tells you to rewrite. It's their content (or their reference's content) — paraphrasing is rewriting their voice.
+- **All other AGENTS rules still apply.** Especially §4.6 (no opaque bg over images), §4.7 (CTA consistency), §4.10 (don't hardcode dynamic content on blog/library/auth pages), §4.13 (footer copyright no leading ©/year), §4.12 (no `fullWidth: true` unless source is genuinely edge-to-edge).
+
+#### Phase 5 — Pre-flight before declaring "done"
+
+Walk every page and verify before telling the expert it's complete:
+- [ ] Section count + order matches source for each page.
+- [ ] Every CTA across the whole site shares button styling (§4.7).
+- [ ] Every image-bearing section uses a real `https://` URL from `upload-site-image` (no `{slot}` refs without backing rows; no `user-uploads://`; no `blob:`/`data:`).
+- [ ] No section has opaque hex/rgb over an image (§4.6).
+- [ ] Footer copyright has no leading `©`/year (§4.13).
+- [ ] No `fullWidth: true` on content sections unless the source is genuinely edge-to-edge (§4.12).
+- [ ] `design.pages.page`, `login`, `register`, `forgot_password`, `reset_password` are header+footer only (§4.10, §4.11).
+- [ ] `blog`, `blog_post`, `library` use raw sections, no hardcoded mock content from the source's blog/library page (§4.10).
+
+#### Why this exists
+
+Every brutal clone session in the project history followed the same anti-pattern: read the source → form a vibe → ship 8 sections → expert points out section X is missing / colors below the fold are wrong / images are AI-generated instead of real / button #3 doesn't match button #1 → 10+ correction passes. **Mapping first turns a 10-pass slog into a 2-pass build.** The Match Brief takes ~10 minutes; the corrections it prevents take hours.
+
 ---
 
 
@@ -1133,8 +1231,8 @@ In raw `design` JSON the same thing looks like:
 
 | React prop | Kajabi field | Values | Notes |
 |---|---|---|---|
-| `style` | `tabs_style` | `"pills"` \| `"tabs"` | default `"pills"` |
-| `align` | `tabs_align` | `"left"` \| `"center"` \| `"right"` | default `"center"` |
+| `style` | `tabs_style` | `"pills"` \\| `"tabs"` | default `"pills"` |
+| `align` | `tabs_align` | `"left"` \\| `"center"` \\| `"right"` | default `"center"` |
 | `tabs[N].name` | `first_tab_name` … `fifth_tab_name` | string | Up to 5 tabs |
 | `tabs[N].slug` | `first_tab_slug` … `fifth_tab_slug` | lowercase string | MUST match a pane's `tab_slug` |
 | `width` | `width` | `"1"`–`"12"` | default `"12"` |
@@ -1384,7 +1482,7 @@ Bold variant: `override_h1_bold_font_styles` toggle, then `select_custom_bold_h1
 
 When the expert asks "make the buttons match" / "fix the typography" / "the heading line-height feels off" / "tighten the form fields" — do this checklist:
 
-1. **Audit existing inline CSS first.** `get-site-design` → walk every block → grep block HTML for `style="font-`, `style="line-height`, `style="letter-spacing`, `style="text-transform"`, `padding:`, `font-size:`, `font-family:`. **Every match is a candidate for deletion** in favor of a `themeSettings` override.
+1. **Audit existing inline CSS first.** `get-site-design` → walk every block → grep block HTML for `style="font-`, `style="line-height`, `style="letter-spacing`, `style="text-transform`, `padding:`, `font-size:`, `font-family:`. **Every match is a candidate for deletion** in favor of a `themeSettings` override.
 2. **Lift recurring inline rules into `themeSettings`.** If you see the same `font-family: 'Playfair Display'` in 6 headings, that belongs in `themeSettings` (`use_custom_fonts: "true"`, `use_primary_custom_font: "true"`, `primary_custom_font_name: "Playfair Display"`, `select_custom_h1_font: "primary"` etc.) — not repeated inline.
 3. **Lift recurring inline button styles into `themeSettings`.** If every CTA carries inline `padding: 16px 32px; text-transform: uppercase; letter-spacing: 2px`, that's the global button system speaking — set `view_advanced_button_customizations: "true"`, `btn_uppercase: "on"`, `btn_letter-spacing: "2px"`, `button_vertical_padding: "16px"`, `button_horizontal_padding: "32px"`. Then **delete the inline declarations**.
 4. **Match the dark/light pair model (§9.8a).** Pick the brand pair ONCE (`btn_background_color` = dark member, `btn_text_color` = light member). Per-CTA, set `btn_type: "dark"` or `"light"` to choose which one renders. Don't set per-block `buttonBackgroundColor` / `buttonTextColor` unless the block genuinely uses an off-brand color.
@@ -1443,16 +1541,19 @@ The key insight: **inline CSS is the symptom of a missed template-level control.
 
 ### 9.9 Pro-only block snippets
 
-These exist as `snippets/block_*.liquid` in Pro themes only. They are NOT yet wired into the React block library — exposing one requires the 6-step procedure in §9.12.
+All Pro-only blocks below are now wired into the React block library and engine — exporters, preview renderer, field schema, and `ALLOWED_BLOCKS_PER_SECTION` set all recognize them. Use them only on Pro sites (`base_theme: streamlined-home-pro` | `encore-page-pro`); they're silently dropped on Standard.
 
-| Snippet | Purpose | Key fields |
-|---|---|---|
-| `block_feature_icon` | Icon-led feature card | `feature_icon`, `feature_icon_color`, `feature_icon_size`, `image_width`, `image_border_radius`, `text` |
-| `block_code_tabs` | Multi-tab code/HTML viewer (up to 4) | `code_tabs`, `tabs_style`, `tabs_align`, per-tab slug/name/content |
-| `block_search_filter` | Faceted filter — see §9.6 | `use_dropdown_filters`, `use_dropdowns_horizontally`, `use_filter_1..5`, `filter_N_options`, `filter_N_title` |
-| `block_search_form` | Standalone keyword search input | search input fields |
-| `block_image_icon` | Image used as inline icon | image picker + sizing |
-| `block_test` | Internal Kajabi placeholder — **do not use** | n/a |
+| Snippet | React component | `kajabiType` | Use for |
+|---|---|---|---|
+| `block_feature_icon` | `<FeatureIcon>` | `feature_icon` | Icon-led feature cards. Inline SVG via `iconCode`, recolored via `iconColor`, sized via `iconSize`. Includes native button (`showButton`+`buttonText`+...). |
+| `block_image_icon` | `<ImageIcon>` | `image_icon` | Standalone decorative SVG (hero sticker, divider). Independent `iconWidth` + `iconHeight`. |
+| `block_code_tabs` | `<Tabs>` | `code_tabs` | Tab strip — see §9.5. Up to 5 tabs; pair with sibling `useAsTab` panes. |
+| `block_search_filter` | `<SearchFilter>` | `search_filter` | Faceted filter — see §9.6. Targets sibling `feature` blocks in same section. |
+| `block_search_form` | `<SearchForm>` | `search_form` | Standalone keyword search input (also see §9.6). |
+| `block_test` | — | — | Internal Kajabi placeholder, **do not wire**. |
+
+**SVG icon blocks (`feature_icon`, `image_icon`):** the `iconCode` prop takes raw inline SVG markup (e.g. `<svg viewBox="0 0 24 24"><path d="..."/>`). Kajabi's runtime CSS forces `fill` and `width`/`height` on the rendered `<svg>` via `!important`, so the SVG should NOT bake in its own width/height/fill — just supply the path. Our preview mirrors that behavior with a scoped `<style>` block. Source any SVG icon set (Lucide, Heroicons, Feather, custom) — paste the raw `<svg>...</svg>` into `iconCode`.
+
 
 ### 9.10 Pro-only section snippets (column sliders)
 
@@ -1478,15 +1579,13 @@ Layout switches set via section settings (not new block types):
 
 To add support: extend `kajabiFieldSchema.ts` SECTION schema (mark new fields `proOnly: true`), extend `Section`/`ContentSection` React props, gate in `serialize.ts` so they only emit when the export target is a `-pro` theme.
 
-### 9.13 Roadmap for exposing Pro blocks
+### 9.13 Adding new Pro blocks (procedure)
 
-Add incrementally when an expert actually needs one:
+All Pro snippets currently shipped by Kajabi are wired (see §9.9). If Kajabi adds a new Pro-only snippet:
 
-1. Create `src/blocks/components/<BlockName>.tsx` matching the Liquid output.
-2. Add `<block_type>` to `BlockType` union in `src/blocks/types.ts`.
-3. Add field defaults to `src/blocks/blockDefaults.ts`.
-4. Add serializer in `src/blocks/serialize.ts` mapping React props → Kajabi `block.settings.*`.
-5. Add field schema entry in `src/engines/kajabiFieldSchema.ts` with `proOnly: true`.
-6. Update `getTemplateCapabilities()` so Standard-themed sites reject the block.
-
-Don't expose all Pro blocks speculatively.
+1. Create `packages/engine/src/blocks/components/<BlockName>.tsx` matching the Liquid output.
+2. Export it from `packages/engine/src/blocks/index.ts`.
+3. Register it in the `BLOCK_COMPONENTS` map in `packages/engine/src/siteDesign/render.tsx`.
+4. Add a field schema entry in `packages/engine/src/engines/kajabiFieldSchema.ts` (`BLOCK_FIELD_SCHEMAS` map).
+5. Add the `kajabiType` string to the appropriate `ALLOWED_BLOCKS_PER_SECTION` set.
+6. Bump `packages/engine/package.json` version → thin clients pick it up via `bun update @k-studio-pro/engine`.
