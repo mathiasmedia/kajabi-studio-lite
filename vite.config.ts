@@ -162,5 +162,16 @@ export default defineConfig(({ mode }) => ({
       "react-dom/client",
       "react-router-dom",
     ],
+    // Belt-and-suspenders: even though viteEngineZipPlugin rewrites
+    // `*.zip?url` imports before esbuild sees them, esbuild's dep-scan
+    // can still log "No loader is configured for .zip" warnings while
+    // walking the engine source. Map .zip to the `empty` loader so
+    // those warnings don't surface — the actual zip URLs come from the
+    // plugin's resolveId, not esbuild's scan.
+    esbuildOptions: {
+      loader: {
+        ".zip": "empty",
+      },
+    },
   },
 }));
