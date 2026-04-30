@@ -5,42 +5,30 @@
  * `site.design` JSON via the SiteDesign renderer, and exports the whole
  * multi-page tree as a Kajabi zip.
  */
-import { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { exportFromTree, triggerDownload } from '@k-studio-pro/engine';
-import { supabase } from '@/integrations/supabase/client';
-import {
-  getSite,
-  resolveBaseTheme,
-  updateSite,
-  type PageKey,
-  type Site,
-} from '@/lib/siteStore';
-import { listSiteImages, imagesBySlot, type SiteImage } from '@/lib/imageStore';
-import { renderDesign, designToPageTrees } from '@/lib/siteDesign/render';
-import { usePreviewFontInjection, useScopedCustomCss } from '@/lib/siteDesign/previewStyles';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import { ArrowLeft, Download, Link2, Pencil } from 'lucide-react';
-import { toast } from 'sonner';
-import { persistExportZip, formatRelativeTime } from '@/lib/exportPersistence';
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import { exportFromTree, triggerDownload } from "@/blocks";
+import { supabase } from "@/integrations/supabase/client";
+import { getSite, resolveBaseTheme, updateSite, type PageKey, type Site } from "@/lib/siteStore";
+import { listSiteImages, imagesBySlot, type SiteImage } from "@/lib/imageStore";
+import { renderDesign, designToPageTrees } from "@/lib/siteDesign/render";
+import { usePreviewFontInjection, useScopedCustomCss } from "@/lib/siteDesign/previewStyles";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ArrowLeft, Download, Link2, Pencil } from "lucide-react";
+import { toast } from "sonner";
+import { persistExportZip, formatRelativeTime } from "@/lib/exportPersistence";
 
 const SYSTEM_PAGE_LABELS: Record<string, string> = {
-  index: 'Home',
-  about: 'About',
-  page: 'Page',
-  contact: 'Contact',
-  blog: 'Blog',
-  blog_post: 'Blog Post',
-  thank_you: 'Thank You',
-  '404': '404',
+  index: "Home",
+  about: "About",
+  page: "Page",
+  contact: "Contact",
+  blog: "Blog",
+  blog_post: "Blog Post",
+  thank_you: "Thank You",
+  "404": "404",
 };
 
 /** Friendly tab label for any system or custom page key. */
@@ -48,18 +36,18 @@ function pageLabel(key: PageKey): string {
   if (SYSTEM_PAGE_LABELS[key]) return SYSTEM_PAGE_LABELS[key];
   return key
     .split(/[-_]/)
-    .map((w) => (w.length === 0 ? '' : w[0].toUpperCase() + w.slice(1)))
-    .join(' ');
+    .map((w) => (w.length === 0 ? "" : w[0].toUpperCase() + w.slice(1)))
+    .join(" ");
 }
 
 export default function SiteEditor() {
   const { siteId } = useParams<{ siteId: string }>();
   const navigate = useNavigate();
   const [site, setSite] = useState<Site | null>(null);
-  const [activePage, setActivePage] = useState<PageKey>('index');
+  const [activePage, setActivePage] = useState<PageKey>("index");
   const [busy, setBusy] = useState(false);
   const [editingName, setEditingName] = useState(false);
-  const [nameDraft, setNameDraft] = useState('');
+  const [nameDraft, setNameDraft] = useState("");
   const [images, setImages] = useState<SiteImage[]>([]);
 
   useEffect(() => {
@@ -69,13 +57,13 @@ export default function SiteEditor() {
       const s = await getSite(siteId);
       if (cancelled) return;
       if (!s) {
-        navigate('/');
+        navigate("/");
         return;
       }
       setSite(s);
       setNameDraft(s.name);
       const keys = s.design?.pageKeys ?? [];
-      if (keys.length > 0 && !keys.includes('index')) {
+      if (keys.length > 0 && !keys.includes("index")) {
         setActivePage(keys[0]);
       }
       const imgs = await listSiteImages(siteId);
@@ -95,16 +83,16 @@ export default function SiteEditor() {
     const channel = supabase
       .channel(`site-editor-${siteId}`)
       .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'sites', filter: `id=eq.${siteId}` },
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "sites", filter: `id=eq.${siteId}` },
         async () => {
           const fresh = await getSite(siteId);
           if (fresh) setSite(fresh);
         },
       )
       .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'site_images', filter: `site_id=eq.${siteId}` },
+        "postgres_changes",
+        { event: "*", schema: "public", table: "site_images", filter: `site_id=eq.${siteId}` },
         async () => {
           const imgs = await listSiteImages(siteId);
           setImages(imgs);
@@ -122,23 +110,15 @@ export default function SiteEditor() {
   // Preview-time font + customCss injection. The hooks live in the engine
   // package so font-resolution / CSS-scope fixes auto-propagate to thin
   // clients via `bun update @kajabi-studio/engine`.
-  //
-  // Scope is `.preview-root` — every preview tree is wrapped in that class
-  // (see SitePreview component + the editor's renderDesign output).
   usePreviewFontInjection(site?.design ?? null, {
-    scopeSelector: '.preview-root',
-    instanceId: site?.id ?? 'editor',
+    scopeSelector: ".preview-root",
+    instanceId: site?.id ?? "editor",
   });
 
-  // Inject the site's customCss into the editor preview so what you see
-  // matches what the export ships to Kajabi. The hook scopes every selector
-  // to `.preview-root` so authoring `section:first-of-type::before { ... }`
-  // (export form) AND `.preview-root > section:first-of-type::before { ... }`
-  // (preview form) are no longer both required — author once, both work.
-  const scopedEditorCss = useScopedCustomCss(site?.design?.customCss, '.preview-root');
+  const scopedEditorCss = useScopedCustomCss(site?.design?.customCss, ".preview-root");
   useEffect(() => {
     if (!scopedEditorCss) return;
-    const style = document.createElement('style');
+    const style = document.createElement("style");
     style.textContent = scopedEditorCss;
     if (site?.id) style.dataset.previewCustomCss = site.id;
     document.head.appendChild(style);
@@ -179,7 +159,7 @@ export default function SiteEditor() {
             headingFont: fonts.heading,
             bodyFont: fonts.body,
             fontImports: (fonts.extras ?? []).map((name) => {
-              const slug = name.trim().replace(/\s+/g, '+');
+              const slug = name.trim().replace(/\s+/g, "+");
               return `https://fonts.googleapis.com/css2?family=${slug}:wght@400;500;600;700;800&display=swap`;
             }),
           }
@@ -188,23 +168,20 @@ export default function SiteEditor() {
         global,
         themeSettings,
         customCss,
-        // base_theme is set once at site creation; resolveBaseTheme falls back
-        // to the family default (streamlined-home / encore-page) for legacy
-        // rows where the column is NULL. Pro sites + Pro landing pages flow
-        // through here without any other change.
         baseTheme: resolveBaseTheme(site),
       });
-      const safe = site.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'site';
+      const safe =
+        site.name
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-|-$/g, "") || "site";
       triggerDownload(blob, `${safe}.zip`);
 
-      // Fire-and-forget cloud upload — don't make the user wait.
-      // The realtime subscription on `sites` will refresh `site` once the
-      // row is updated, which lights up the Copy link button.
       persistExportZip(site, blob).then((res) => {
         if (res.ok) {
-          toast.success('Latest build link updated');
+          toast.success("Latest build link updated");
         } else {
-          toast.error('Couldn\u2019t save build to cloud', { description: res.error });
+          toast.error("Couldn\u2019t save build to cloud", { description: res.error });
         }
       });
     } catch (err) {
@@ -219,9 +196,9 @@ export default function SiteEditor() {
     if (!site?.latestExportUrl) return;
     try {
       await navigator.clipboard.writeText(site.latestExportUrl);
-      toast.success('Download link copied');
+      toast.success("Download link copied");
     } catch (err) {
-      toast.error('Couldn\u2019t copy link', { description: (err as Error).message });
+      toast.error("Couldn\u2019t copy link", { description: (err as Error).message });
     }
   }
 
@@ -233,14 +210,12 @@ export default function SiteEditor() {
     );
   }
 
-  const PreviewPage = site.design
-    ? renderDesign(site.design, activePage, slotMap)
-    : null;
+  const PreviewPage = site.design ? renderDesign(site.design, activePage, slotMap) : null;
 
-  const isLandingPage = site.kind === 'landing_page';
-  const backLabel = isLandingPage ? 'All landing pages' : 'All sites';
-  const backHref = isLandingPage ? '/landing-pages' : '/';
-  const exportLabel = isLandingPage ? 'Export landing page' : 'Export theme';
+  const isLandingPage = site.kind === "landing_page";
+  const backLabel = isLandingPage ? "All landing pages" : "All sites";
+  const backHref = "/";
+  const exportLabel = isLandingPage ? "Export landing page" : "Export theme";
 
   return (
     <div className="min-h-screen bg-muted/20">
@@ -258,8 +233,8 @@ export default function SiteEditor() {
               onChange={(e) => setNameDraft(e.target.value)}
               onBlur={commitName}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') commitName();
-                if (e.key === 'Escape') {
+                if (e.key === "Enter") commitName();
+                if (e.key === "Escape") {
                   setNameDraft(site.name);
                   setEditingName(false);
                 }
@@ -276,19 +251,14 @@ export default function SiteEditor() {
             </button>
           )}
           {isLandingPage ? (
-            <SlugField
-              key={site.id}
-              initial={site.slug ?? ''}
-              onCommit={commitSlug}
-            />
+            <SlugField key={site.id} initial={site.slug ?? ""} onCommit={commitSlug} />
           ) : (
             <span className="hidden text-xs text-muted-foreground sm:inline">
-              · {pageKeys.length} {pageKeys.length === 1 ? 'page' : 'pages'}
+              · {pageKeys.length} {pageKeys.length === 1 ? "page" : "pages"}
             </span>
           )}
         </div>
 
-        {/* Page selector — hidden for landing pages (single page only). */}
         {!isLandingPage && (
           <Select value={activePage} onValueChange={(v) => setActivePage(v as PageKey)}>
             <SelectTrigger className="h-9 w-56">
@@ -319,7 +289,7 @@ export default function SiteEditor() {
             )}
             <Button onClick={handleExport} disabled={busy || !site.design} size="sm">
               <Download className="h-4 w-4" />
-              {busy ? 'Building zip…' : exportLabel}
+              {busy ? "Building zip…" : exportLabel}
             </Button>
           </div>
           {site.latestExportAt && (
@@ -329,8 +299,6 @@ export default function SiteEditor() {
           )}
         </div>
       </div>
-
-
 
       {/* Preview */}
       <div className="preview-root">
@@ -348,13 +316,7 @@ export default function SiteEditor() {
  * Inline slug editor for landing pages. Stays uncontrolled so the user can
  * type freely; commits onBlur or Enter (slugified server-side too).
  */
-function SlugField({
-  initial,
-  onCommit,
-}: {
-  initial: string;
-  onCommit: (next: string) => void | Promise<void>;
-}) {
+function SlugField({ initial, onCommit }: { initial: string; onCommit: (next: string) => void | Promise<void> }) {
   const [value, setValue] = useState(initial);
   const [editing, setEditing] = useState(false);
 
@@ -379,8 +341,8 @@ function SlugField({
           onChange={(e) => setValue(e.target.value)}
           onBlur={commit}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') commit();
-            if (e.key === 'Escape') {
+            if (e.key === "Enter") commit();
+            if (e.key === "Escape") {
               setValue(initial);
               setEditing(false);
             }
@@ -398,7 +360,7 @@ function SlugField({
       title="Edit slug"
       className="hidden items-center gap-1 rounded px-1.5 py-0.5 font-mono text-xs text-muted-foreground hover:bg-muted hover:text-foreground sm:inline-flex"
     >
-      <span>/{initial || 'no-slug'}</span>
+      <span>/{initial || "no-slug"}</span>
       <Pencil className="h-3 w-3" />
     </button>
   );
