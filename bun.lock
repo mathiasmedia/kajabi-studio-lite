@@ -6,7 +6,7 @@
       "name": "vite_react_shadcn_ts",
       "dependencies": {
         "@hookform/resolvers": "^3.10.0",
-        "@k-studio-pro/engine": "^0.1.13",
+        "@k-studio-pro/engine": "^0.1.14",
         "@radix-ui/react-accordion": "^1.2.11",
         "@radix-ui/react-alert-dialog": "^1.1.14",
         "@radix-ui/react-aspect-ratio": "^1.1.7",
@@ -193,7 +193,7 @@
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.25", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-vNk6aEwybGtawWmy/PzwnGDOjCkLWSD2wqvjGGAgOAwCGWySYXfYoxt00IJkTF+8Lb57DwOb3Aa0o9CApepiYQ=="],
 
-    "@k-studio-pro/engine": ["@k-studio-pro/engine@0.1.13", "https://europe-west4-npm.pkg.dev/lovable-core-prod/sandbox-npm-cache/@k-studio-pro/engine/-/engine-0.1.13.tgz", { "peerDependencies": { "react": "^18.0.0", "react-dom": "^18.0.0" } }, "sha512-CHQ4esIB76Klpm1m0SYvwm9P/2Do9i0MDt69XGLapgGFHYTCAunGf8X7XPAm8y1qdFwzJwIe3gMlcg3sKSNzcw=="],
+    "@k-studio-pro/engine": ["@k-studio-pro/engine@0.1.14", "https://europe-west1-npm.pkg.dev/lovable-core-prod/sandbox-npm-cache/@k-studio-pro/engine/-/engine-0.1.14.tgz", { "peerDependencies": { "react": "^18.0.0", "react-dom": "^18.0.0" } }, "sha512-vbuHPi7wGDywYDDuUt6W9UTcEE8fA22W+NswAfNn1f1nNk6iwEtzr7Kh9kkUlq5AWrl2GmFA/GqugRPi9o7HWw=="],
 
     "@nodelib/fs.scandir": ["@nodelib/fs.scandir@2.1.5", "", { "dependencies": { "@nodelib/fs.stat": "2.0.5", "run-parallel": "^1.1.9" } }, "sha512-vq24Bq3ym5HEQm2NKCr3yXDwjc7vTsEThRDnkp2DK9p1uqLR+DHurm/NOTo0KG7HYHU7eppKZj3MyqYuMBf62g=="],
 
