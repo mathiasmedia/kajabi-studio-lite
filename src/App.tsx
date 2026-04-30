@@ -1,10 +1,25 @@
+import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { AuthProvider } from "@/hooks/useAuth";
-import { RequireAuth } from "@/components/RequireAuth";
+import { AuthProvider, useAuth } from "@engine-auth";
+
+function RequireAuth({ children }: { children: ReactNode }) {
+  const { user, loading } = useAuth();
+  if (loading) {
+    return (
+      <div style={{ padding: 24, fontFamily: "system-ui, sans-serif" }}>
+        Loading...
+      </div>
+    );
+  }
+  if (!user) {
+    return <Navigate to="/auth" replace />;
+  }
+  return <>{children}</>;
+}
 import Index from "./pages/Index.tsx";
 // LandingPagesDashboard is no longer routed — the unified workspace at "/" shows
 // both websites and landing pages. The file is kept for thin-client sync compat.
