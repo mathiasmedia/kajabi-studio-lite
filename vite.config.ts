@@ -30,6 +30,8 @@ export default defineConfig(({ mode }) => ({
   resolve: {
     // Order matters: more-specific aliases must come before "@".
     alias: [
+      // ---- Auth-safe direct alias (avoids duplicate AuthContext instances) ----
+      { find: /^@engine-auth$/, replacement: engineFile("shell/hooks/useAuth.tsx") },
       // ---- Engine package ----
       { find: /^@k-studio-pro\/engine\/data$/, replacement: engineFile("data/index.ts") },
       { find: /^@k-studio-pro\/engine\/shell$/, replacement: engineFile("shell/index.ts") },

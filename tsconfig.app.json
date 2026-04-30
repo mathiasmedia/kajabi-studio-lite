@@ -23,6 +23,7 @@
     "noFallthroughCasesInSwitch": false,
 
     "paths": {
+      "@engine-auth": ["./node_modules/@k-studio-pro/engine/src/shell/hooks/useAuth.tsx"],
       "@kajabi-studio/engine": ["./node_modules/@k-studio-pro/engine/src/index.ts"],
       "@k-studio-pro/engine": ["./node_modules/@k-studio-pro/engine/src/index.ts"],
       "@k-studio-pro/engine/data": ["./node_modules/@k-studio-pro/engine/src/data/index.ts"],

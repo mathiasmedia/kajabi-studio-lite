@@ -1,5 +1,9 @@
 /**
- * Re-export of preview-time font + customCss injection hooks from the
- * engine package. Keeps thin-client editor code in lockstep with master.
+ * Re-export preview style utilities from the engine package.
  */
-export { usePreviewFontInjection, useScopedCustomCss } from '@k-studio-pro/engine';
+export {
+  scopeCss,
+  usePreviewFontInjection,
+  useScopedCustomCss,
+  type PreviewFontInjectionOptions,
+} from "@k-studio-pro/engine";
