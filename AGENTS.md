@@ -45,3 +45,61 @@ You do NOT:
 - **`convert to iframe`** / **`migrate to iframe shell`** — literal operator command. Replace the current project shell with the canonical iframe template in this folder, then run the knowledge sync.
 - **`sync knowledge`** — force a re-sync (useful after a known master rule change).
 - **All other site-editing requests** — work as documented in `knowledge/AGENTS.md` §3.
+
+## 🔑 How to find the app token (READ THIS BEFORE EVERY SITE EDIT)
+
+🚨 **Thin clients do NOT have a project-level secrets store like master does.** `secrets--fetch_secrets` is a master-only tool — it does not exist in thin-client tool inventories. The token must come from one of the following, checked in order:
+
+### Discovery procedure — try in order, stop at first hit
+
+```bash
+# 1. Standard Lovable env injection (most common — Lovable mirrors project env vars into the sandbox)
+echo "ENV CHECK:"
+test -n "$VITE_THIN_CLIENT_APP_TOKEN" && echo "✓ VITE_THIN_CLIENT_APP_TOKEN is set (${#VITE_THIN_CLIENT_APP_TOKEN} chars)"
+test -n "$THIN_CLIENT_APP_TOKEN" && echo "✓ THIN_CLIENT_APP_TOKEN is set (${#THIN_CLIENT_APP_TOKEN} chars)"
+
+# 2. Literal .env file in repo root (fallback if env injection isn't configured)
+test -f .env && echo "FILE CHECK:" && grep -E "^(VITE_)?THIN_CLIENT_APP_TOKEN=" .env || echo "no .env or no token line"
+```
+
+If **either** check finds a value starting with `tca_live` and 57 characters long, use it. In your edit script, prefer:
+
+```ts
+const APP_TOKEN =
+  Deno.env.get("VITE_THIN_CLIENT_APP_TOKEN") ??
+  Deno.env.get("THIN_CLIENT_APP_TOKEN") ??
+  (await Deno.readTextFile(".env").catch(() => ""))
+    .split("\n")
+    .find((l) => /^(VITE_)?THIN_CLIENT_APP_TOKEN=/.test(l))
+    ?.split("=", 2)[1]
+    ?.trim()
+    ?.replace(/^["']|["']$/g, "");
+
+if (!APP_TOKEN) {
+  console.error("THIN_CLIENT_APP_TOKEN not found. See AGENTS.md '🔑 How to find the app token'.");
+  Deno.exit(1);
+}
+```
+
+The Supabase URL is **not secret** — hardcode it: `const SUPABASE_URL = "https://iqxcgazfrydubrvxmnlv.supabase.co";`
+
+### If both checks come up empty
+
+This thin client was set up without the token. Ask the operator (verbatim):
+
+> "I can't find the app token in this project's environment. Please add a project secret named **`VITE_THIN_CLIENT_APP_TOKEN`** with master's `THIN_CLIENT_APP_TOKEN` value (starts with `tca_live`, 57 chars). You can copy it from the master Lovable project's secrets, or from the Supabase project's edge function secrets. Once added, redeploy the preview and I'll retry."
+
+Do NOT try to:
+- Write a migration to create `client_tokens` / `validate_client_token` (the shared token IS the system).
+- "Regenerate" the token from a dashboard (there's no UI for it; the value is whatever master has).
+- Hardcode the token into AGENTS.md or any committed file (the operator chose `.env`/secrets to keep it out of public repo source).
+
+## 🚨 If you see "Token validation failed" or "Invalid or revoked client token"
+
+You found a token but master rejected it. Causes in order of likelihood:
+
+1. **Stale value.** The thin client has an old token; master rotated `THIN_CLIENT_APP_TOKEN`. Ask the operator to update this project's `VITE_THIN_CLIENT_APP_TOKEN` secret to master's current value.
+2. **Wrong value.** Length isn't 57 or it doesn't start with `tca_live`. Re-check the operator pasted it correctly.
+3. **Wrong env var name.** Master's edge functions match against `THIN_CLIENT_APP_TOKEN` exactly; the `VITE_` prefix is just how Vite exposes it to the browser. Both work for sending — what matters is the **value** matches master's `THIN_CLIENT_APP_TOKEN` env var verbatim.
+
+Do NOT attempt to "fix" this by writing migrations or building a per-site token system. The shared token IS the system today.
