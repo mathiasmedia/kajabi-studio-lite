@@ -7,7 +7,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { exportFromTree, triggerDownload } from "@k-studio-pro/engine";
+import { exportFromTree, triggerDownload } from "@/blocks";
 import { supabase } from "@/integrations/supabase/client";
 import { getSite, resolveBaseTheme, updateSite, type PageKey, type Site } from "@/lib/siteStore";
 import { listSiteImages, imagesBySlot, type SiteImage } from "@/lib/imageStore";
