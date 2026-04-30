@@ -103,3 +103,54 @@ All colors MUST be HSL.
     @apply bg-background text-foreground;
   }
 }
+
+/* ============================================================
+   Kajabi block grid (preview parity)
+   sections.tsx wraps each block in <div class="col-md-{1-12}">
+   inside <div class="row">. The exported theme ships Bootstrap;
+   the live preview does not, so we provide a minimal equivalent
+   so multi-column layouts render correctly here as well.
+   ============================================================ */
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  margin-left: -15px;
+  margin-right: -15px;
+  width: auto;
+}
+.row > [class^="col-md-"],
+.row > [class*=" col-md-"] {
+  padding-left: 15px;
+  padding-right: 15px;
+  box-sizing: border-box;
+  width: 100%;
+}
+@media (min-width: 768px) {
+  .row > .col-md-1  { width: 8.3333%; }
+  .row > .col-md-2  { width: 16.6667%; }
+  .row > .col-md-3  { width: 25%; }
+  .row > .col-md-4  { width: 33.3333%; }
+  .row > .col-md-5  { width: 41.6667%; }
+  .row > .col-md-6  { width: 50%; }
+  .row > .col-md-7  { width: 58.3333%; }
+  .row > .col-md-8  { width: 66.6667%; }
+  .row > .col-md-9  { width: 75%; }
+  .row > .col-md-10 { width: 83.3333%; }
+  .row > .col-md-11 { width: 91.6667%; }
+  .row > .col-md-12 { width: 100%; }
+}
+
+/* Slider arrows: match Pro section.liquid exactly.
+   Pro renders custom <svg><polyline> chevrons inside .slider-arrow-icon and
+   explicitly suppresses Swiper's default ::after glyphs with content:none. */
+.kajabi-arrow-btn.swiper-button-prev,
+.kajabi-arrow-btn.swiper-button-next {
+  background: transparent !important;
+}
+.kajabi-arrow-btn.swiper-button-prev::after,
+.kajabi-arrow-btn.swiper-button-next::after,
+.kajabi-arrow-btn.swiper-button-prev::before,
+.kajabi-arrow-btn.swiper-button-next::before {
+  content: none !important;
+  background: none !important;
+}
