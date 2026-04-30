@@ -24,8 +24,13 @@ export default defineConfig(({ mode }) => ({
     },
   },
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
+  // Treat base-theme zips shipped inside the engine as static assets so
+  // `import url from '...zip?url'` resolves to a served URL instead of esbuild
+  // trying to parse the zip bytes as JS.
+  assetsInclude: ["**/*.zip"],
   optimizeDeps: {
     include: ["jszip"],
+    exclude: ["@k-studio-pro/engine"],
   },
   resolve: {
     // Order matters: more-specific aliases must come before "@".
