@@ -4,7 +4,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { AuthProvider, useAuth } from "@engine-auth";
+import { AuthProvider, useAuth } from "@k-studio-pro/engine/shell";
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
