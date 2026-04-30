@@ -62,6 +62,9 @@ function viteEngineZipPlugin(): Plugin {
     enforce: "pre",
     async resolveId(source, importer) {
       if (!source.endsWith(".zip?url")) return null;
+      // Skip if we're already resolving our own re-export (prevents
+      // self-reference error in Rollup at build time).
+      if (importer && importer.startsWith(PREFIX)) return null;
       const withoutQuery = source.slice(0, -"?url".length);
       let absPath: string;
       if (path.isAbsolute(withoutQuery)) {
@@ -74,10 +77,17 @@ function viteEngineZipPlugin(): Plugin {
       if (!fs.existsSync(absPath)) return null;
       return PREFIX + absPath;
     },
-    load(id) {
+    async load(id) {
       if (!id.startsWith(PREFIX)) return null;
       const absPath = id.slice(PREFIX.length);
-      return `export { default } from ${JSON.stringify(absPath + "?url")};`;
+      // Delegate to Vite's built-in ?url asset handling by resolving
+      // the absolute path with ?url, bypassing this plugin via the
+      // importer-prefix guard in resolveId above.
+      const resolved = await this.resolve(absPath + "?url", id, {
+        skipSelf: true,
+      });
+      const target = resolved?.id ?? absPath + "?url";
+      return `export { default } from ${JSON.stringify(target)};`;
     },
   };
 }
