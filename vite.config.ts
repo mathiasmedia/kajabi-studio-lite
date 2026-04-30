@@ -29,8 +29,21 @@ export default defineConfig(({ mode }) => ({
   // trying to parse the zip bytes as JS.
   assetsInclude: ["**/*.zip"],
   optimizeDeps: {
-    include: ["jszip"],
+    force: true,
+    include: [
+      "react",
+      "react/jsx-runtime",
+      "react-dom",
+      "react-dom/client",
+      "react-router-dom",
+      "jszip",
+    ],
     exclude: ["@k-studio-pro/engine"],
+    esbuildOptions: {
+      loader: {
+        ".zip": "empty",
+      },
+    },
   },
   resolve: {
     // Order matters: more-specific aliases must come before "@".
@@ -61,6 +74,7 @@ export default defineConfig(({ mode }) => ({
       "react-dom",
       "react/jsx-runtime",
       "react/jsx-dev-runtime",
+      "react-router-dom",
       "@tanstack/react-query",
       "@tanstack/query-core",
       "swiper",
