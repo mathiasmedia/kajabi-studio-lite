@@ -23,6 +23,15 @@
     "noFallthroughCasesInSwitch": false,
 
     "paths": {
+      "@kajabi-studio/engine": ["./node_modules/@k-studio-pro/engine/src/index.ts"],
+      "@/blocks": ["./node_modules/@k-studio-pro/engine/src/blocks"],
+      "@/blocks/*": ["./node_modules/@k-studio-pro/engine/src/blocks/*"],
+      "@/engines": ["./node_modules/@k-studio-pro/engine/src/engines"],
+      "@/engines/*": ["./node_modules/@k-studio-pro/engine/src/engines/*"],
+      "@/lib/siteDesign": ["./node_modules/@k-studio-pro/engine/src/siteDesign"],
+      "@/lib/siteDesign/*": ["./node_modules/@k-studio-pro/engine/src/siteDesign/*"],
+      "@/types/assets": ["./node_modules/@k-studio-pro/engine/src/types/assets"],
+      "@/types/schemas": ["./node_modules/@k-studio-pro/engine/src/types/schemas"],
       "@/*": ["./src/*"]
     }
   },
