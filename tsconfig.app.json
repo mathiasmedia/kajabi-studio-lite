@@ -24,14 +24,17 @@
 
     "paths": {
       "@kajabi-studio/engine": ["./node_modules/@k-studio-pro/engine/src/index.ts"],
-      "@/blocks": ["./node_modules/@k-studio-pro/engine/src/blocks"],
+      "@k-studio-pro/engine": ["./node_modules/@k-studio-pro/engine/src/index.ts"],
+      "@k-studio-pro/engine/data": ["./node_modules/@k-studio-pro/engine/src/data/index.ts"],
+      "@k-studio-pro/engine/shell": ["./node_modules/@k-studio-pro/engine/src/shell/index.ts"],
+      "@k-studio-pro/engine/vite": ["./node_modules/@k-studio-pro/engine/src/vite.ts"],
+      "@/blocks": ["./node_modules/@k-studio-pro/engine/src/blocks/index.ts"],
       "@/blocks/*": ["./node_modules/@k-studio-pro/engine/src/blocks/*"],
-      "@/engines": ["./node_modules/@k-studio-pro/engine/src/engines"],
+      "@/engines": ["./node_modules/@k-studio-pro/engine/src/engines/index.ts"],
       "@/engines/*": ["./node_modules/@k-studio-pro/engine/src/engines/*"],
-      "@/lib/siteDesign": ["./node_modules/@k-studio-pro/engine/src/siteDesign"],
+      "@/lib/siteDesign": ["./node_modules/@k-studio-pro/engine/src/siteDesign/index.ts"],
       "@/lib/siteDesign/*": ["./node_modules/@k-studio-pro/engine/src/siteDesign/*"],
-      "@/types/assets": ["./node_modules/@k-studio-pro/engine/src/types/assets"],
-      "@/types/schemas": ["./node_modules/@k-studio-pro/engine/src/types/schemas"],
+      "@/types/*": ["./node_modules/@k-studio-pro/engine/src/types/*"],
       "@/*": ["./src/*"]
     }
   },
