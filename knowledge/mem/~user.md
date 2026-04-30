@@ -1,0 +1,1 @@
+Keep responses super short and concise, ideally one sentence for straightforward fixes.
