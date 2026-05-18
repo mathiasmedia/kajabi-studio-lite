@@ -3,7 +3,7 @@
 Before doing any substantive work in a new chat/session, first run:
 
 ```bash
-deno run -A scripts/sync-knowledge.ts
+deno run -A --node-modules-dir=auto scripts/sync-knowledge.ts
 ```
 
 Then read `knowledge/AGENTS.md` and follow the bundled knowledge instructions.
@@ -27,7 +27,7 @@ Do not add a predev script unless you are certain Deno is available in this envi
 ## Step 0 — ALWAYS run this on the first message of every chat
 
 ```bash
-deno run --allow-read --allow-write --allow-net --allow-env scripts/sync-knowledge.ts
+deno run -A --node-modules-dir=auto scripts/sync-knowledge.ts
 ```
 
 If the `knowledge/` folder only has a `README.md` (no `AGENTS.md`, no `PRO_CAPABILITIES.md`), the sync hasn't run yet and you have **zero rules loaded**. Run it first, then read what it pulled in.
