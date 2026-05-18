@@ -1,13 +1,113 @@
-# Thin Client Agent Guide
+# Kajabi Studio Agent Guide
 
-> **SCOPE GUARD — READ FIRST:**
-> This file applies ONLY to **thin client remixes** of Kajabi Studio (per-expert site-building projects).
-> If this project IS the master (project name contains "Kajabi Studio Max", or the project ID is `4fd872bc-5636-4a8a-bde9-a334a0656f59`), **IGNORE this entire file** and follow normal master-project behavior (full freedom to modify app shell, backend, dashboard, edge functions, etc.).
-> The rest of this guide assumes you are inside a thin client remix.
+> **SCOPE — READ FIRST:**
+> This file is the **single source of truth for both master AND thin clients**. Every authoring rule (every §4.x guardrail, every §9 Pro capability) applies identically in both contexts. The only thing that differs is **how you read/write site data** — see §0 below.
+>
+> - **Master** (project ID `4fd872bc-5636-4a8a-bde9-a334a0656f59`, "Kajabi Studio Max"): you have full DB access (`supabase--read_query`, `psql`, migrations) AND full freedom to modify the app shell, engine, edge functions, dashboards, etc. Use direct DB writes for site `design` JSON. Edge functions are for **thin clients to call** — master rarely needs them.
+> - **Thin client remix** (any other project): you do NOT have DB access. Edit sites via the `get-site-design` / `update-site-design` / `upload-site-image` edge functions over HTTPS with the `X-App-Token` header. Do NOT modify the app shell, engine, or backend — see §8.
+>
+> **Conflict-resolution hierarchy (when sources disagree, highest priority wins):**
+> 1. `mem://~user` (cross-session user preferences) — always wins on style/communication
+> 2. `mem://index.md` Core rules (always-in-context one-liners) — always wins on project rules
+> 3. `AGENTS.md` (this file) + `PRO_CAPABILITIES.md` — canonical law
+> 4. `mem://reference/*` / `mem://feature/*` / `mem://workflow/*` — case-law refining the law above. **When a memory file contradicts AGENTS.md, the more recently dated/edited source wins** — memories are usually the up-to-date verified-bug refinement of an older AGENTS rule.
+> 5. `packages/engine/src/engines/kajabi_rendering_guide.md` — Liquid/CSS runtime reference (factual; never overridden, but only used when authoring against Kajabi internals)
 
-> **You are the Lovable AI inside a thin client remix used to build a custom Kajabi site for one expert/client.**
-> Your job is to **edit the site's design data** (and generate images for it) so the expert gets a great Kajabi site.
-> If this guide conflicts with a casual user assumption, **this guide wins** unless the operator explicitly overrides it.
+---
+
+## 0. How the app works (read this before doing anything site-related)
+
+**Kajabi Studio is a multi-site builder.** Experts (end-users) sign in, see a dashboard of their sites + landing pages, click into one, and edit it block-by-block in a visual editor with a live Liquid-rendered preview. When they're happy, they export a `.zip` and upload it to Kajabi.
+
+### 0.1 The data model — every site lives in the `sites` table
+
+Schema (verified in `packages/engine/src/data/siteStore.ts`):
+
+| Column | Meaning |
+|---|---|
+| `id` | UUID primary key — appears in editor route `/sites/<id>/editor` |
+| `user_id` | Owner (`auth.uid()`); RLS enforces ownership |
+| `name`, `brand_name` | Display name + sitewide brand string |
+| `kind` | `'site'` (multi-page Kajabi website) OR `'landing_page'` (single page). Locked at creation |
+| `base_theme` | One of `streamlined-home`, `streamlined-home-pro`, `encore-page`, `encore-page-pro`. Locked at creation |
+| `slug` | Landing pages only — URL-friendly token |
+| `design` | **The full site as JSON** — pages, sections, blocks, props, themeSettings, branding. Shape: `SiteDesign` in `packages/engine/src/siteDesign/types.ts` |
+| `imported_zip_path` | If imported from a Kajabi `.zip`, the path in the private `site-zips` bucket (fallback asset source) |
+| `latest_export_url`, `latest_export_at` | Most recent exported zip in `site-exports` bucket |
+
+**The `design` JSON shape (essentials):**
+```ts
+{
+  version: number,
+  pageKeys: string[],           // ordered page list — MUST match keys of `pages`
+  pages: { [key: string]: { sections: DesignSection[] } },
+  fonts?: { heading?, body?, ... },
+  themeSettings?: { ... },      // sitewide Kajabi style guide values
+  branding?: { colorPrimary, colorAccent, fontFamilyHeading, fontFamilyBody },
+  globalSections?: { exit_pop?, two_step? },   // sitewide overlays
+  previewMenus?: { ... },        // editor preview-only nav data
+}
+```
+
+Each `DesignSection` is one of: `kind: 'header' | 'content' | 'footer' | 'raw'` with `props` and `blocks`. Each block has a `type` (text/cta/feature/pricing_card/accordion/image/logo/menu/copyright/link_list/social_icons/...) and a `props` object. Full block field reference: `mem://reference/block-field-catalog.md`.
+
+### 0.2 How to VIEW / FIND / LIST sites
+
+- **Master** — query the DB directly:
+  ```sql
+  SELECT id, name, kind, base_theme, updated_at
+  FROM sites
+  WHERE user_id = '<expert uuid>'   -- omit for all sites
+  ORDER BY updated_at DESC;
+  ```
+  Use `supabase--read_query` or `psql`. To inspect a specific site's design: `SELECT design FROM sites WHERE id = '<uuid>';`. To find an expert's user_id, join `auth.users` by email.
+
+- **Thin client** — call `get-site-design` with a known `siteId` (the expert is on `/sites/<siteId>/editor` — pull it from the route or ask). There is NO list endpoint for thin clients; the iframe shows the dashboard and the expert picks one.
+
+- **Both** — open the editor in the browser at `/sites/<siteId>/editor?page=<pageKey>` to see the live Liquid preview + sidebar. The sidebar's anatomy is documented in §4.35.
+
+### 0.3 How to EDIT a site (the universal rule)
+
+Always: **GET the current design → mutate IN PLACE → write the FULL design back.** Never POST a freshly-built design object — it wipes every page you didn't touch.
+
+- **Master:** read with `supabase--read_query` (`SELECT design FROM sites WHERE id = '<uuid>'`), mutate in a script, write back with a migration or `supabase--insert`-style update. For one-off edits, prefer running a small Deno/Node script that uses the service-role key to update the row, OR use `update-site-design` exactly like a thin client would (also works on master).
+- **Thin client:** §3 below — `get-site-design` → mutate → `update-site-design` over HTTPS with `X-App-Token`.
+
+The mutation logic is identical in both cases. Every §4.x authoring rule (allowlists, chrome key hygiene, white-on-white, CTA consistency, dynamic page guards, etc.) applies regardless of which transport you used.
+
+### 0.4 How to CREATE a new site or landing page
+
+🚨 **There is NO `create-site` edge function and NO programmatic create API exposed to either master or thin clients.** Sites are always created from the **dashboard UI**:
+
+- Multi-page website → **New → Website** on `/` (the SitesDashboard). Calls `createSite({ name, brandName?, baseTheme? })` in `packages/engine/src/data/siteStore.ts`. Defaults to `streamlined-home`; pass `streamlined-home-pro` for Pro.
+- Single landing page → **New → Landing page** on `/landing` (the LandingPagesDashboard). Calls `createLandingPage({ name, brandName?, slug?, baseTheme? })`. Defaults to `encore-page`; pass `encore-page-pro` for Pro.
+- From a Kajabi zip → **Import Kajabi site** on the dashboard. Calls `importSiteFromZip(blob)` → `createSiteFromImport(...)`. Detects `kind` + `base_theme` from the zip; populates `design`, `imported_zip_path`, both footer slots, and `globalSections` (`exit_pop` / `two_step`).
+
+Both `createSite` and `createLandingPage` seed `design` from `buildBlankDesign(brand)` / `buildLandingPageBlankDesign(brand)` (in `packages/engine/src/siteDesign/`). The blank multi-page baseline ships **8 pages** (`index`, `about`, `page`, `contact`, `blog`, `blog_post`, `thank_you`, `404`) — each just header + simple hero + footer. The expert is expected to ask the AI to flesh them out.
+
+**If the expert asks "create me a new site / landing page" in chat:**
+- **Master:** you CAN insert directly via SQL using the same shape as `createSite()`. Prefer a migration so it's auditable. But usually the right answer is to tell them to click **New** on the dashboard — it auto-seeds menus, theme files, and base-theme bundles via background tasks (`initializeSiteThemeFromBundle`).
+- **Thin client:** tell them to click **New** on the dashboard inside the iframe. There's no edge function to call.
+
+After creation, you edit the resulting site exactly per §0.3.
+
+### 0.5 How the PREVIEW works
+
+The editor renders the site by feeding `design` JSON through `LiquidPagePreview` (`packages/engine/src/preview-liquid/`), which executes the **actual base-theme Liquid templates** in-browser via a wasm-backed engine. Preview ≡ live Kajabi by construction — same Liquid, same CSS, same fonts (per `themeSettings`/`fonts`). If something looks wrong in preview, it'll look exactly that wrong on Kajabi after export.
+
+The dashboard thumbnails use the same pipeline at smaller scale. There is no React-side renderer to keep in sync (the historical SHADOW_MAP / scopeCss parity rules are obsolete — see §4.18).
+
+### 0.6 How EXPORT works
+
+Editor → **Export** button → `exportThemeZip(...)` (`packages/engine/src/engines/exportEngine.ts`). It:
+1. Serializes `design` → Kajabi `settings_data.json` (validated against the base-theme schema registry, §4.27).
+2. Merges with the original zip's `templates/`, `sections/`, `snippets/`, `assets/` (last-touched-keys-win via `mergeSettings`).
+3. Bundles every external image URL into `assets/<hash>.<ext>` (default ON, §4.8 NOTES + `mem://feature/asset-bundling-export.md`).
+4. Returns a `Blob`; the dashboard uploads it to `site-exports/<userId>/<siteId>/latest.zip` and offers a download.
+
+Authors (you) almost never need to invoke export manually — the editor handles it. Just make sure the `design` you saved passes the §4.31 diagnostic order before telling the expert to export.
+
+---
 
 ---
 
@@ -181,7 +281,23 @@ Defaults for image sections:
 
 This applies to every section type, including hero, CTA, and full-bleed image bands. When generating a hero image and wiring it onto a section, default to `background: ""` unless the expert explicitly asks for a tint.
 
+### 4.6a 🚨 OVERLAY / SECTION BG CHANGE → RE-AUDIT EVERY INLINE `color:` STYLE IN THE SECTION'S BLOCKS
 
+🚨 **Verified failure mode (Carrie Variation hero, 2026-05-10).** The hero had `<p style="color:rgba(244,239,230,0.85)">...</p>` (light cream text) over a DARK overlay. Expert flipped the overlay to a LIGHT cream tint to brighten the section. Inline `color:` was NOT updated → light text on light bg → invisible. Save returned 200, expert reported "I cannot see the lede."
+
+**The rule — whenever you change a section's `background` (or `bgType`/`backgroundImage` overlay), IMMEDIATELY audit every block in that section for inline `style="color:..."` / `style="...color:..."` declarations. Re-evaluate each one against the NEW effective background:**
+
+- Dark text (`#2A2722`, dark hex, dark `rgba(...)`) on a now-DARK bg → flip to a light brand color.
+- Light text (`#FBF7F0`, `rgba(244,239,230,0.85)`, white) on a now-LIGHT bg → flip to a dark brand color.
+- Same logic for inline `<blockquote style="color:">`, `<cite style="color:">`, `<a style="color:">`, `<strong style="color:">`.
+
+Inline editorial colors (per `mem://reference/inline-style-html-content.md`) are the right pattern — but they don't auto-adjust. A dark→light overlay swap silently leaves light text invisible; a light→dark swap silently leaves dark text invisible.
+
+**Pre-flight on every section bg / overlay change:** `grep -i 'style="[^"]*color:' ` the section's blocks' `text`/`html` HTML. For each match, confirm contrast vs the new bg. Fix before saving. Same rule for editorial `<blockquote>`/`<cite>` typography blocks per `mem://reference/inline-style-html-content.md`.
+
+**Companion rule to §4.35al** (button contrast vs section bg). §4.35al covers button-vs-section blend; §4.6a covers inline-text-vs-section blend. Both fire on every section bg change.
+
+See `mem://reference/overlay-change-reaudit-inline-colors.md`.
 
 ### 4.7 CTA buttons across a site MUST look consistent and on-brand
 
@@ -631,17 +747,11 @@ When a card-style block (`feature`, `pricing_card`, etc.) needs an "Explore →"
 
 ---
 
-### 4.18 Preview ↔ Kajabi shadow parity (verified 2026-04)
+### 4.18 (removed) — Preview ↔ Kajabi shadow parity is no longer a concern
 
-The engine's `SHADOW_MAP` in `packages/engine/src/blocks/blockChrome.ts` MUST emit Kajabi's exact `box-shadow-{small|medium|large}` class values from `streamlined-home(-pro)/assets/styles.scss.liquid` lines 3052–3070:
+As of engine 0.4.0, the editor preview and dashboard thumbnails render via the **Liquid pipeline** (the same Liquid templates Kajabi runs at runtime). Shadow values, font sizing, button rendering, and every other CSS detail are now identical between preview and live site by construction — there is no React-renderer to keep in sync. The historical `SHADOW_MAP` parity rule is obsolete; if a shadow looks wrong in preview, it'll look exactly the same wrong on Kajabi (because it IS Kajabi's CSS).
 
-- `small`: `0 2px 10px 0 rgba(0, 0, 0, 0.05)`
-- `medium`: `0 4px 20px 0 rgba(0, 0, 0, 0.075)`
-- `large`: `0 10px 40px 0 rgba(0, 0, 0, 0.1)`
 
-These are SINGLE soft shadows, not double-layered Material-style shadows. If you change them to "look better" you'll silently desync the editor preview from the live Kajabi render. Symptom: accordion/card edges look heavier, sharper, or more dramatic in the preview than in the exported site. Whenever the expert reports "the shadow doesn't quite match what shipped", check this file first.
-
-If Kajabi ever updates these class values in a future base-theme version, re-extract from the current zip and update `SHADOW_MAP` in lockstep.
 
 ### 4.19 PricingCard auto-themes for dark surfaces (verified 2026-04)
 
@@ -728,7 +838,7 @@ Order of preference (use the first one that fits the page composition):
 2. **Add a hairline border to the block** that harmonizes with the brand (e.g. `border: "1px solid #E8E2D4"` on warm, `1px solid rgba(0,0,0,0.08)` on cool). Use when the brand is so minimal/monochrome that even a subtle block tint would feel heavy. ⚠️ Engine caveat: the chrome serializer does NOT currently emit `border` to Kajabi (only `border_radius`/`background`/`shadow`/`padding`) — so a `border` value renders in the editor preview but is dropped on export. Until that's fixed in `blockChrome.ts`, treat the border option as preview-only and prefer option 1.
 3. **Tint the section background** to a soft off-white. **LAST RESORT** — only when (a) the section is the ONLY content section on the page, OR (b) tinting it actually improves the page rhythm (e.g. an "alternating bands" layout where every other section is already tinted by design). NEVER tint a single isolated section just because it happens to contain a white card — that creates the blotchy palette this rule exists to prevent.
 
-Never rely on shadow alone — the verified Kajabi shadows (§4.18) are too gentle to substitute for an edge on white-on-white.
+Never rely on shadow alone — Kajabi's stock card shadows are very gentle (5–10% alpha) and don't define an edge on a white surround.
 
 **Anti-pattern (do NOT do this):** "I see three sections with white cards on white backgrounds — I'll tint those three sections cream and leave the others white." This produces a page with no compositional reason for which sections are cream vs white. The expert will (correctly) call it out as an afterthought. Tint the blocks instead — every section stays white, every card pops on its own merit.
 
@@ -736,7 +846,7 @@ Never rely on shadow alone — the verified Kajabi shadows (§4.18) are too gent
 
 **Pre-flight check before saving any page:** for every `content` section whose `background` is white (`#FFF`/`#FFFFFF`/`white`/`rgb(255,255,255)`), walk the section's blocks. If any chrome-bearing block (`pricing_card`, `accordion`, `feature`, `card`) has `backgroundColor` also white AND `border` is empty, **tint the BLOCK** to a brand-family off-white (option 1 above). Reach for section tinting (option 3) ONLY if you can articulate a compositional reason — "this is the only content section on the page" or "the page already alternates tinted/white bands by design". If the only reason is "the card was invisible", you're doing option 3 wrong; use option 1.
 
-The PricingCard component itself defaults `border` to `1px solid rgba(0,0,0,0.06)` when no chrome border is set — but `serializeChromeProps` only emits the `border` field when explicitly authored. So the **preview** masks the bug, and **export to Kajabi** ships borderless cards. The fix lives in the design JSON, not the component default.
+As of engine 0.4.0, the preview renders via Liquid (Kajabi's actual CSS), so this bug is now visible in preview — exactly as it appears on the live site. Tint the block per option 1 and the preview will reflect the fix immediately.
 
 ---
 
@@ -860,6 +970,1274 @@ Every brutal clone session in the project history followed the same anti-pattern
 
 ---
 
+### 4.25a 🚨 NEVER wrap a block's `text` HTML in `<div style="padding:...">` — use the block's chrome `padding` prop instead
+
+🚨 **Verified failure mode (Aurelian House services overview, 2026-05-08).** When a `feature` (or `pricing_card`, `card`, `accordion`) needs internal padding around its copy, the wrong instinct is to wrap the entire `text` HTML in a `<div style="padding:36px 36px 0 36px">…</div>`. It "works" visually for the text — but the block's button (rendered from `showButton: true` + `buttonText`) is a **SIBLING of the text HTML inside the chrome**, NOT a child of your inner `<div>`. Result: text is nicely padded, button is flush to the card edges, the card looks broken and unbalanced. Same problem for any future hover/border/spacing change — your inline div doesn't cover the whole card surface.
+
+**The rule — internal card padding ALWAYS goes on the block's chrome `padding` prop (4-sided object per §4.25), NEVER inline in HTML.**
+
+```jsonc
+// ❌ Wrong — text padded, button flush to card edges
+{
+  "type": "feature",
+  "props": {
+    "padding": { "top": "0", "right": "0", "bottom": "40", "left": "0" },
+    "showButton": true, "buttonText": "Explore →",
+    "text": "<div style=\"padding:36px 36px 0 36px;\"><h3>…</h3><p>…</p></div>"
+  }
+}
+
+// ✅ Right — chrome padding wraps text + button uniformly
+{
+  "type": "feature",
+  "props": {
+    "padding": { "top": "36", "right": "36", "bottom": "36", "left": "36" },
+    "showButton": true, "buttonText": "Explore →",
+    "text": "<h3>…</h3><p>…</p>"
+  }
+}
+```
+
+**Why this trap is sticky:** the inline-div approach LOOKS right in preview when you only look at the text, and it's the natural CSS instinct. But it fundamentally misunderstands the block's render tree — `text` HTML and the button are independent children of the chrome wrapper. Anything you want applied "to the whole card" (padding, background tint, hover, border) belongs on chrome props, not inside the text field.
+
+**Pre-flight check on every feature/pricing_card/card/accordion save:** scan the block's `text` HTML for any leading `<div style="padding:` (or any wrapper div whose only purpose is layout/spacing). If found, lift those values into the chrome `padding` object and strip the wrapper div. Same rule for inline `margin`, `background`, `border-radius` on a wrapper div around the whole text — those belong on chrome `margin`/`backgroundColor`/`borderRadius` props.
+
+**Allowed inline styles inside `text` HTML:** typography of individual elements (`<h3 style="font-family:...">`, `<p style="color:...">`), small tactical spacing between paragraphs (`<p style="margin:0 0 12px 0">`), inline link colors. NOT card-level layout.
+
+---
+
+### 4.26 🚨 BLOCK CONTENT PROPS — verify EVERY prop name against the engine source before saving (silent-drop trap, applies to ALL blocks not just chrome)
+
+🚨 **Verified failure mode — happens to every block, not just `pricing_card`.** §4.25 covers chrome props (padding, borderRadius, backgroundColor, etc.). This rule covers **content props** — the block's actual data fields like `name`, `text`, `heading`, `price`, `image`, `label`, `url`. The failure is identical and just as silent:
+
+**The trap:** `update-site-design` accepts arbitrary JSON. It does NOT validate prop names against any block's `*Props` interface. So if you write `{ type: "pricing_card", props: { title: "Pro", description: "...", featured: true } }`, the save returns `200 OK`, the JSON sits in the database verbatim, a re-fetch shows your "edits" present — but the renderer ignores every unknown key and draws the card from the (still empty/default) real props. The expert sees no change after save. You see no error.
+
+**Real-world example (verified 2026-04 on the Mastermind pricing section):** AI wrote `pricing_card` blocks using `title`, `description`, `priceSubtext`, `featured`. The actual `PricingCardProps` interface uses `name`, `text`, `heading`, `highlight`. Three full save cycles passed before anyone noticed the cards looked unchanged — every save was technically successful, every prop was silently dropped.
+
+**Common wrong↔right renames (verified against engine source):**
+
+| Block | ❌ Wrong (silently dropped) | ✅ Right (engine reads these) |
+|---|---|---|
+| `pricing_card` | `title` | `name` |
+| `pricing_card` | `description` | `text` |
+| `pricing_card` | `priceSubtext` / `caption` | `heading` |
+| `pricing_card` | `featured` / `popular` / `recommended` | `highlight` (boolean) |
+| `pricing_card` | `badge` / `tag` | `badgeText` |
+| `pricing_card` | `accentColor` / `themeColor` | `brandColor` |
+| `pricing_card` | inline-styled `<ul>` for features | plain `<ul><li>…</li></ul>` in `text` (engine's `decorateFeatureList` auto-wraps each `<li>` in a branded checkmark chip) |
+| `pricing_card` | `align` (the generic block alignment prop) | `textAlign` + `mobileTextAlign` (`'left' \| 'center' \| 'right'`) — drives card content + bullet alignment AND button `alignSelf`. The generic `align` prop is silently ignored on pricing cards. To align bullets left on desktop AND mobile, set BOTH props. See `mem://reference/pricing-card-alignment-props.md`. |
+| `feature` | `title` | write inline as `<h3>` inside the single `text` HTML field (per `mem://feature/feature-single-text-field.md`) |
+| `feature` | `description` / `body` | `text` |
+| `feature` | `imageUrl` / `src` | `image` |
+| `feature` | `cta` / `link` | `buttonText` + `buttonUrl` + `showButton: true` |
+| `cta` | `text` / `title` | `label` (or `buttonText` — both accepted, prefer `label`) |
+| `cta` | `href` / `link` | `url` |
+| `text` | `body` / `content` / `richText` | `html` (or `text` — both accepted on the text block) |
+| `image` | `url` / `imageUrl` | `src` |
+| `image` | `link` / `href` | `imageHref` |
+| `accordion` | `title` / `header` | `heading` |
+| `accordion` | `body` / `content` | `text` |
+| `logo` | `image` / `src` | `logoSrc` (or `image` — check the block) |
+| `link_list` | `header` / `heading` | `title` (and per §4.5, omit it on footer link_lists) |
+
+**The rule — every time you author or edit a block:**
+
+1. **Before writing the props object, READ THE BLOCK'S COMPONENT FILE** in the engine to confirm the exact `*Props` interface field names. Source of truth lives at `node_modules/@k-studio-pro/engine/src/blocks/components/<BlockName>.tsx` (thin clients) or `packages/engine/src/blocks/components/<BlockName>.tsx` (master). One `code--view` call per block type you're touching. **Do not guess prop names from "what would make sense"** — every block has a specific schema and the conventions vary (some use `name`, some use `title`, some use `label`, some use `heading`).
+2. **Cross-check against `mem://reference/block-field-catalog.md`** for the canonical per-block field list. If the block isn't in the catalog yet, read the source and add it.
+3. **Never assume a "natural" name works.** `title`/`description`/`featured` feel obvious — they're wrong on `pricing_card`. `text`/`url`/`label` feel obvious — they're right on `cta`. The only way to know is to check the source.
+
+**Pre-flight check before EVERY `update-site-design` save:**
+
+For every block you authored or edited in this save:
+1. Open the block's source file in the engine package.
+2. List the block's `*Props` interface fields.
+3. Diff against the props object you're about to send. **Any key in your object that's NOT in the interface = silent-drop bug. Either rename it to the right field or remove it.**
+
+**Symptom mapping → suspect wrong prop names FIRST:**
+- "I saved the change and refreshed but the card/section looks identical"
+- "The expert says nothing changed even though my save returned 200"
+- "Re-fetching shows my edits in the JSON but the preview ignores them"
+- "The card has my new background color (chrome prop) but my new title/body (content props) are missing"
+- "The badge isn't showing even though I set `badge: 'POPULAR'`"
+
+→ **Open the block source. Compare prop names to the interface. If any prop you set isn't in the interface, that's the bug.** Don't go looking at chrome, padding, the renderer, or the save endpoint. It's the prop name.
+
+**Why save validation isn't the answer.** Adding strict prop validation to `update-site-design` would break legitimate use cases (forward-compat for new fields the master engine adds before thin-client engines update; experimental blocks; migration windows). The save endpoint is correctly permissive. **The discipline must live in the AI: read the block source before authoring, every time.**
+
+**The mnemonic:** **two API responses look identical after a save: "wrote your fields" and "wrote your fields and threw most of them away." 200 OK does NOT mean your change took effect — only the render does.** Always verify in the live preview after save, and if nothing changed, suspect prop names before anything else.
+
+**Engine maintainer rule — same class of bug, different layer.** §4.25/§4.26 cover the AUTHORING side (don't write wrong prop names in `design` JSON). The mirror failure on the ENGINE side is **drift between a block's `.serialize` function and the registry-derived allowlist in `schemaRegistry.ts`** (generated from each base theme's `{% schema %}`) — the serializer emits a snake_case field, the registry validator strips it because it isn't in the parsed schema, the field never reaches `settings_data.json`, the live Kajabi site renders without it. Same symptom ("I set this prop, the live site ignores it"), different root cause. **After editing any block component's `.serialize` or after regenerating the schema registry, run the audit:**
+
+```bash
+deno run -A scripts/audit-block-schema-drift.ts
+# or: bun run audit:schema
+```
+
+It prints every field a serializer emits that isn't in the matching allowlist. For each row, decide: (a) add to schema (most common — silent-drop bug), (b) remove from `.serialize` (not a real Kajabi field), or (c) ignore (intentionally local-only — document why). Re-run until clean before bumping the engine version.
+
+**Known editor-only props that don't (yet) export — document, don't paper over.** Some block props render correctly in the Lovable preview but have NO matching Kajabi schema field, so the audit will flag them. Don't blindly add them to the schema (Kajabi will reject the upload or silently drop them). Either (a) ship a real Kajabi-side feature (Liquid + schema + settings) before whitelisting, OR (b) leave the prop preview-only and document it as such in the block's memory file. Current verified preview-only props:
+
+- `pricing_card.highlight` — adds translateY lift + accent stripe + colored shadow in preview; doesn't export. Workaround: page-level `customCss` (see `mem://reference/pricing-card-kajabi-structure.md`).
+- `pricing_card.badgeText` — preview pill; on export it silently REPLACES the `name` field (lossy). Workaround: same as above, plus keep a real `name` value separately.
+- `pricing_card.priceFontFamily` — would override the price font; not in `PRICING_BLOCK_FIELDS`.
+- Any `*FontFamily` / `*FontWeight` per-block prop — Kajabi font control lives in `themeSettings` (per §4.22), not per-block. Lift these to `themeSettings` instead of trying to emit them as block fields.
+
+When a thin client reports "the highlighted tier is flat on Kajabi but lifted in preview" or "the MOST CHOSEN badge is missing on the live site, and the card is named MOST CHOSEN instead of Pro", the cause is one of these props. Send them the customCss workaround from the pricing-card memory file; do NOT promise the prop will work after the next engine bump unless you've actually shipped the schema + Liquid + serializer changes.
+
+---
+
+### 4.26a 🚨 NEVER INVENT SCHEMA FIELD IDS — same rule as §4.26 but for themeSettings & section fields
+
+🚨 **Verified failure mode (Ascend site Style Guide, 2026-05-08).** Authored Pro custom-font setup with `primary_font_link`, `primary_font_family`, `accent_font_link`, `accent_font_family` — NONE exist in `streamlined-home-pro`'s `config/settings_schema.json`. `update-site-design` returned 200, the JSON contained the keys, but the Style Guide UI showed blank because the REAL fields (`use_custom_fonts`, `font_stylesheet_links`, `use_primary_custom_font`, `primary_custom_font_name`, `primary_custom_font_fallback`, `use_accent_custom_font`, `accent_custom_font_name`, `accent_custom_font_fallback`) were never written.
+
+§4.26 covers block content props. THIS rule covers `themeSettings`, section-level settings, and any other field IDs you write into `design`. The bug shape is identical: `update-site-design` accepts arbitrary JSON without validating against any schema, so invented field IDs sit valid and useless. The Style Guide / editor UI / Liquid renderer all read from the REAL field IDs only.
+
+**The rule — for EVERY themeSettings / section-settings / block-field write:**
+
+1. **Verify the field ID exists in the base theme's parsed schema BEFORE saving.** Sources of truth, in order:
+   - `packages/engine/src/engines/schemaRegistry.ts` / `schemas.generated.json` (the parsed `{% schema %}` from each base theme — covers section settings + block fields)
+   - `mem://reference/pro-custom-fonts.md` + `mem://reference/pro-custom-fonts-value-formats.md` (Pro themeSettings: fonts, buttons, forms)
+   - `mem://reference/block-field-catalog.md` (per-block fields)
+   - The base theme zip's `config/settings_schema.json` directly — extract it (`unzip base-theme.zip config/settings_schema.json -d /tmp/`) when the registry doesn't have what you need
+2. **Never guess by analogy.** "primary_font_link sounds right because it's a font link" → wrong. Read the schema. Pro's actual field is `font_stylesheet_links` (a textarea holding raw `<link>` HTML for ALL fonts, primary + accent together) — nothing like the made-up name.
+3. **200 OK is NOT validation.** The save succeeded means "we wrote your JSON to the row." It does NOT mean "the fields you wrote are real." Only the rendered editor UI / live Kajabi proves the fields took effect.
+
+**Pre-flight on every themeSettings or styling write:** list every field ID you're about to set. For each one, confirm it appears in `schemas.generated.json` (or the relevant memory file). If any field can't be found, it's invented — find the real name before saving.
+
+**Symptom → suspect invented field IDs FIRST:**
+- "Saved themeSettings, refreshed the editor, Style Guide is still blank"
+- "Set use_custom_fonts: 'true' and the font names but Kajabi shows the default font"
+- "Re-fetching shows my themeSettings keys present in the JSON but the UI ignores them"
+
+→ Open `schemas.generated.json` and grep for each key you wrote. Any miss = the bug.
+
+See `mem://reference/never-invent-schema-field-ids.md`.
+
+---
+
+### 4.27 🚨 HEADER + FOOTER BLOCK ALLOWLIST — registry-driven, not a hand-coded shortlist
+
+🚨 **The truth comes from the imported base-theme zip, not a frozen list.** Each base theme's `sections/{header,footer,footer_pro}.liquid {% schema %}` declares which block types that section accepts. Engine 0.4.x+ serializes against that registry (`packages/engine/src/engines/schemaRegistry.ts`, generated from the four base-theme zips) — anything not allowed for the *current `baseTheme`* is silently dropped on export. The hard-coded React allowlist in `sections.tsx` is now just a fast-path fallback for callers that don't pass `baseTheme`.
+
+**Verified per-theme allowlists (extracted from `schemas.generated.json`, 2026-05-04):**
+
+| Theme | Header blocks | Footer (`footer`) blocks | Pro footer (`footer_pro`) extra blocks |
+|---|---|---|---|
+| `streamlined-home` | `logo`, `menu`, `dropdown`, `user`, `cta`, `hello_bar`, `social_icons` | `logo`, `link_list`, `copyright`, `social_icons` | — |
+| `streamlined-home-pro` | same as Standard | same as Standard | adds `accordion`, `audio`, `assessment`, `blog`, `cta`, `countdown`, `code`, `card`, `event`, `event_video`, `feature`, `form`, `image`, `multi_video`, `offer`, `pricing`, `text`, `video`, `video_embed`, `external_widget` (plus `link_list`/`copyright`/`social_icons`) |
+| `encore-page` | same | same | — |
+| `encore-page-pro` | same | same | same Pro footer set as `streamlined-home-pro` |
+
+**Reading the table:**
+- **Header** is identical across all 4 themes. `dropdown`/`user`/`hello_bar` are valid Kajabi blocks but currently render as opaque/raw in our editor (no first-class React component yet — they round-trip through opaque passthrough; see `mem://feature/opaque-block-passthrough.md`).
+- **Standard footer** is the small 4-block set on every theme.
+- **Pro footer (`footer_pro`)** unlocks ~20 extra block types — newsletter forms (`form`), CTAs, feature/card grids, blog teasers, countdowns, multi-column rich content. This is what makes a Pro footer "richer" than Standard.
+- The exporter chooses `footer` vs `footer_pro` automatically based on the theme: Pro themes serialize the footer slot as `footer_pro` (see `exportEngine.ts` + `schemaRegistry.ts`).
+- **`<ContentSection>`** is also registry-driven; the catalog of section/block types it accepts is wider than any hard-coded list and grows as themes ship new block types.
+
+**Authoring guidance still applies even though the registry is permissive:**
+1. **Prefer the canonical block.** `logo` for wordmarks (not `text`), `link_list` for footer columns (not `menu`), `copyright` for the legal line. The registry is wide but the editor's React renderer is still narrower — unknown blocks render as opaque placeholders in the preview.
+2. **Pro footer blocks only work on Pro themes.** Putting `feature`/`form`/`card` in a footer on a Standard site → silently dropped on export. Confirm `base_theme` is `*-pro` before reaching for the extended set.
+3. **Without a `baseTheme` argument**, `serializeTree` falls back to the hard-coded set in `sections.tsx` and the historical silent-drop bug returns. Always pass `baseTheme`.
+
+**Critical:** `text`, `image`, `feature`, `card`, `pricing`, `accordion`, `code`, `cta`, `form`, `menu` (in footer), `link_list` (in header), etc. are ALL silently dropped if placed outside the matching allowlist. No save error, no export error, just a missing block on the live site.
+
+**The most common authoring mistakes (verified across 12 sites in the fleet, 2026-05 audit, 165 disallowed blocks total):**
+
+| Wrong (silently dropped) | Right |
+|---|---|
+| `text` block in header used as a "wordmark" (`<p>BRAND</p>`) | `logo` block with `logoType: "text"`, `logoText: "BRAND"`, plus `logoTextFontFamily`/`logoTextFontSize`/`logoTextFontWeight`/`logoTextLetterSpacing`/`logoTextColor` |
+| `image` block in header for a logo image | `logo` block with `logoType: "image"`, `logo: "<https url>"`, `logoWidth: "..."` |
+| `text` block in footer for a tagline / brand line / address | `logo` block (`logoType: "text"`) for the brand line; `copyright` block for the legal line; or move tagline copy into a content section ABOVE the footer |
+| `text` block in footer for the `© 2026 Acme` line | `copyright` block with `text: "Acme"` (per §4.13 — Kajabi auto-prepends `© <year> `) |
+| `image` block in footer for a logo image | `logo` block with `logoType: "image"` |
+| `menu` block in footer (Kajabi rejects `menu` from footer schema) | `link_list` block (footer's canonical "navigation column" block) |
+| `feature` / `card` / `pricing` / `accordion` in header or footer | Move to a `content` section between header and footer |
+
+**The rule — every header/footer authoring decision:**
+
+1. **Brand wordmark or logo image in the header?** → `logo` block (`logoType: "text"` or `"image"`). Never `text`, never `image`.
+2. **Navigation links in the header?** → `menu` block.
+3. **CTA button in the header?** → `cta` block.
+4. **Social icon row in header or footer?** → `social_icons` block.
+5. **Link columns in the footer?** → `link_list` blocks (per §4.5, omit titles by default). Never `menu`.
+6. **Brand wordmark/logo in the footer?** → `logo` block.
+7. **Legal/copyright line in the footer?** → `copyright` block (per §4.13, no leading `©`/year).
+8. **Anything else** (tagline paragraphs, "stay in touch" prose, mission statement, "made with care" lines, address blurbs, testimonials) → these belong in a CONTENT section above the footer, NOT in the footer itself.
+
+**Symptom mapping → check allowlist FIRST:**
+- "the live site has no logo / no header brand mark" → text or image block in header (should be `logo`)
+- "the footer is missing the brand line / tagline / 'made by ___' line" → text block in footer (should be `logo`/`copyright` or moved above the footer)
+- "the footer column links don't show up" → likely `menu` in footer (should be `link_list`)
+- "I see the block in the editor preview but not on the exported site" → 99% chance it's an allowlist violation
+
+**Engine 0.3.10+ surfaces this as a console warning the moment the renderer encounters a disallowed block:**
+```
+[siteDesign] Block type "text" is not allowed in <headerSection> (section "Header"). It will be DROPPED on Kajabi export. For wordmark/brand text, use a <Logo> block (logoType: "text" or "image") instead.
+```
+The block is also visually dropped from the preview (matching export behavior) so the bug is immediately visible.
+
+**Pre-flight check before saving any header or footer:**
+1. Look up the site's `base_theme`. If unknown, treat as Standard.
+2. For every block in a `header` section, confirm its `type` is in the header column above for that theme.
+3. For every block in a `footer` section, confirm its `type` is in the footer column above for that theme — and remember Pro themes unlock the `footer_pro` extended set, Standard themes do NOT.
+4. If any block fails the check, REWRITE it to the canonical block per the table above before calling `update-site-design`. Don't save and "fix it later" — the expert may export in the meantime and ship a broken site.
+
+**Canonical text wordmark (the fix for the most common case — `text` in header):**
+```ts
+{
+  type: "logo",
+  props: {
+    logoType: "text",
+    logoText: "VANGUARD",
+    logoTextFontFamily: "Playfair Display",
+    logoTextFontSize: "22",
+    logoTextFontWeight: "500",
+    logoTextLetterSpacing: "3",
+    logoTextColor: "#F8F4EC",
+    logoUrl: "/",
+    width: "3",
+    align: "left",
+  }
+}
+```
+
+**Canonical footer copyright (paired with §4.13):**
+```ts
+{
+  type: "copyright",
+  props: { text: "Acme Coaching · All rights reserved" }   // NO leading © or year
+}
+```
+
+---
+
+### 4.28 🚨 NEVER use section-level `maxWidth` (or any renderer-only CSS) to constrain block layout — use the 12-column grid
+
+🚨 **Verified silent-drop on Kajabi export.** Setting `maxWidth: 920` (or any pixel/`%` value) on a `ContentSection`'s props constrains the inner column in the Lovable preview — the section looks ~3/4 width and nicely centered. **Kajabi's `settings_data.json` section schema has no `max_width` field**, so the serializer silently drops the prop on export. Kajabi then renders the section at full container width, and any block inside with `width: "12"` stretches edge-to-edge. Same JSON, two completely different layouts: tidy in preview, full-bleed on the live site. Same class of bug as inline-CSS-instead-of-platform-primitives (see §9.8e PRO STYLING and §4.15 native block buttons).
+
+**The rule — constrain layout with the 12-column block grid, not section CSS.** Kajabi's section row centers any sub-12 block inside the 12-column container automatically, and the preview renders the same way (per `mem://feature/preview-grid-parity.md`). Both renderers honor the grid identically; both ignore section-level `maxWidth`.
+
+**Width recipes (apply to every block in the section, including the section heading text block):**
+
+| Visual goal | Block `width` | Block `align` | Approx. on-page width |
+|---|---|---|---|
+| Tight reading column (long-form copy, FAQ) | `"6"` | `"center"` | ~50% |
+| Standard centered column (accordion, agenda, narrow CTA stack) | `"8"` | `"center"` | ~67% |
+| Loose centered column (wider feature list, testimonial column) | `"10"` | `"center"` | ~83% |
+| Full bleed (hero copy, full-row grids, splits) | `"12"` | `"center"` / `"left"` | 100% of container |
+
+**Forbidden on `ContentSection` props (all renderer-only, all silently dropped on export):**
+- ❌ `maxWidth` (any value)
+- ❌ `width` on the section itself (sections don't have a width prop in Kajabi's schema)
+- ❌ Inline `<style>`/CSS in custom HTML to clamp container width
+- ❌ Wrapping every block in a `<div style="max-width:920px;margin:0 auto">` inside `text` HTML
+
+**Symptom mapping → check section-level `maxWidth` FIRST:**
+- "this section looks centered and narrow in the preview but stretches edge-to-edge on Kajabi"
+- "the FAQ accordions are full-bleed on the live site but ~3/4 width in preview"
+- "the agenda is centered nicely on Lovable but huge on Kajabi"
+- "the section reads fine here but is way too wide after export"
+
+→ Open the section's props. If `maxWidth` is set, **remove it** and re-author every block inside with `width: "8"` (or `"6"`/`"10"` per the recipe) + `align: "center"`. Don't leave `maxWidth` "for the preview" — it lies.
+
+**Pre-flight check on every site/section save:** scan every `ContentSection` props object for any `maxWidth` key. If found, delete it AND audit the section's blocks: if any block has `width: "12"` and the section was visually narrow in your editor, change those blocks to `width: "8"` + `align: "center"` so the constraint survives export.
+
+**Why this exists:** §4.12 already forbids `fullWidth: true` (the inverse mistake — breaking blocks OUT of the 1170px container). This rule covers the symmetric mistake — using a non-existent section field to clamp INWARD. Both bugs share the same root cause: trying to control layout with section-level props instead of the block grid that Kajabi actually serializes. **The 12-column block grid is the only width primitive that survives export.**
+
+---
+
+### 4.29 🚨 SCHEMA-DRIVEN EDITOR + DUAL-SHAPE PROPS — the editor writes snake_case for unaliased schema fields, blocks must tolerate both
+
+🚨 **System change you need to know about (engine 0.4.x–0.6.10).** The block field editor (`BlockFieldForm`, `EditorSidebar`) is now **registry-driven** — it reads each block's allowed fields from `schemaRegistry.ts` (parsed from each base-theme `{% schema %}`) and renders inputs for EVERY field the schema declares. Three consequences you must understand:
+
+1. **Author-wins export (Phase B3).** Whatever the editor writes reaches Kajabi. The serializer consults the registry as a 2nd-opinion allowlist — registry-only blocks (e.g. `dropdown`/`user`/`hello_bar` in headers, every Pro `footer_pro` block) survive to `settings_data.json` instead of silent-drop. The hard-coded React allowlist in `sections.tsx` is now a fast-path fallback only. See `mem://feature/registry-aware-export-passthrough.md` and §4.27.
+
+2. **Dual-shape storage is intentional.** First-class blocks (`text`, `cta`, `feature`, `pricing_card`, `image`, `logo`) have BOTH camelCase and snake_case keys coexisting in saved JSON. The editor writes snake_case (Kajabi schema names) for any field without a `.deserialize()` alias on the block; the block's React component reads camelCase. This is NOT a bug — do NOT "normalize" or rewrite block JSON to one shape. Both shapes save, export, and round-trip correctly.
+
+3. **The render-time gap is closed by `readField`.** When a block component needs to read a prop that has a snake_case schema sibling, use the `readField` helper from the engine barrel:
+   ```ts
+   import { readField } from '@k-studio-pro/engine';
+   const bg = readField<string>(props, 'buttonBackgroundColor', 'btn_background_color');
+   const label = readField<string>(props, 'label', 'buttonText', 'btn_text');
+   ```
+   Apply on demand per-block — don't pre-emptively retrofit every component. If an expert reports "I changed this field in the editor, save succeeded, but preview ignores it," the fix is one `readField()` call swapping the bare `props.X` read for the dual-shape read. See `mem://feature/readfield-dual-shape-reader.md`.
+
+**Authoring implication for site edits via `update-site-design`:** §4.26's rule still applies — verify prop names against the block's `*Props` interface before saving. The editor handles dual-shape automatically; AI-authored JSON should still prefer the camelCase canonical names the block component reads natively (avoids needing a `readField` retrofit later).
+
+**Pre-flight on every engine bump:** if a block component is reported as "ignoring an editor change," check whether the field has a snake_case schema name distinct from the block's prop name. Add a `readField` call rather than renaming the schema field or forcing the editor to write the camelCase alias.
+
+---
+
+### 4.30 🚀 ANATOMY OF A NEW SITE BUILD — branding first, then structure, then content
+
+The single most common failure mode when building a fresh site is going block-first and discovering halfway through that every CTA needs to be re-coloured, every heading re-weighted, and every section re-padded because `themeSettings` was never set. Branding must come BEFORE composition — §4.7 (CTA consistency), §4.22 (explicit font weights), and §4.23 (white-on-white) all assume the brand tokens already exist.
+
+**The ordered procedure — every new `kind: 'site'` build:**
+
+1. **Confirm `kind` and `base_theme`.** `get-site-design` reveals both. Pro themes (`*-pro`) unlock §4.27's footer_pro blocks and PRO_CAPABILITIES.md's slider/columns/font overrides; Standard themes silently drop them. Don't author Pro-only blocks on a Standard site.
+2. **Set sitewide branding via the 🎨 panel OR direct `design.branding` write.** 3 colors + 2 fonts (`colorPrimary`, `colorAccent`, `fontFamilyHeading`, `fontFamilyBody`) — fills empty `themeSettings`/`fonts` slots at export so Kajabi system pages (login/store/checkout) inherit the brand. See §4.33.
+3. **Set explicit `themeSettings` typography.** Per §4.22: every heading level rendered + body + buttons. Standard fields (`font_weight_heading`/`line_height_heading`/etc.) AND per-element overrides (`override_h<N>_font_styles:"true"` + weight + lh + sizes). Skipping this = preview/Kajabi font weight mismatch.
+3a. **Set sitewide CSS resets in `customCss` BEFORE composing.** Three Kajabi defaults silently leak through brand styling and cause "why does this look off" bugs later. Emit ALL of them on every new site:
+    ```css
+    /* Button shadow — Kajabi base .btn ships with shadow; brand buttons are flat */
+    .btn, a.btn, button.btn { box-shadow: none !important; }
+    .header .btn, .header__inner .btn,
+    .header .btn:hover, .header .btn:focus { box-shadow: none !important; }
+
+    /* Feature text-button padding leak — base .btn padding (9.5px 30px) bleeds into
+       buttonStyle:"text" because Pro's zero-padding override is #block-{id} scoped */
+    .feature .btn--text, .feature .btn.btn--text {
+      padding: 0 !important;
+      margin: 12px 0 0 !important;
+      background: transparent !important;
+      border: none !important;
+      box-shadow: none !important;
+    }
+
+    /* Footer link_list title alignment — Pro footer_pro centers .link_list__title by
+       default; restyling font/color without resetting text-align leaves titles centered
+       while ul/li are left-aligned */
+    .footer_pro .link_list__title,
+    .footer_pro .link_list h3,
+    .footer_pro .link_list h4,
+    .footer_pro .link_list ul,
+    .footer_pro .link_list li { text-align: left !important; }
+    ```
+    See `mem://reference/button-shadow-reset.md`, `mem://reference/feature-text-button-padding-leak.md`, `mem://reference/footer-pro-link-list-title-centered-default.md`.
+4. **Build header ONCE, build footer ONCE.** Both are SHARED site-wide — define them as `SharedHeader`/`SharedFooter` constants and reuse on every page. Last definition wins on export. Header allowlist: §4.27. Footer copyright: §4.13 (no leading ©/year).
+5. **Build pages one at a time, hero first.** Save after each page. For clones: §4.24's map-first procedure is mandatory. **Editorial copy** (testimonials, pull quotes, signatures, magazine-style hero callouts) MUST use inline-styled `<blockquote>`/`<cite>`/`<p style="...">` per `mem://reference/inline-style-html-content.md` — themeSettings only covers semantic tags, not editorial one-offs.
+6. **Audit dynamic pages BEFORE first export.** `blog`/`blog_post`/`library` MUST use raw sections (§4.10). `page`/`login`/`register`/`forgot_password`/`reset_password` MUST be header+footer only (§4.10, §4.11).
+
+**Why branding-first matters:** if you compose 5 pages with hardcoded `buttonBackgroundColor: "#000"` on every CTA and THEN realize the brand is navy, you have to walk every page and rewrite every CTA. With `themeSettings.color_button` set first, individual CTAs can omit the per-block override and inherit. Same for fonts — explicit weights before composition means every heading lands right on the first save.
+
+---
+
+### 4.31 🔧 EDITING AN EXISTING SITE — diagnostic order when something looks wrong
+
+When the expert reports "this looks broken" / "X isn't working" / "the live site doesn't match preview," walk this order BEFORE making any edit:
+
+1. **`get-site-design`** — load the current JSON. Never edit blind.
+2. **Check the block's prop names against the engine source** (§4.26). 80% of "I saved and nothing changed" reports are silent prop-name drops.
+3. **Check chrome key shape** (§4.25). camelCase + 4-sided padding object + no `px` on borderRadius.
+4. **Check allowlist** (§4.27). Header/footer blocks outside their schema are silently dropped on export.
+5. **Check section-level layout traps** — `fullWidth: true` (§4.12), `maxWidth` (§4.28), opaque bg over image (§4.6).
+6. **Check dynamic-page hardcoding** (§4.10) — blog/library/auth pages with composed mock content.
+7. **Check feature `imageWidth`** (§4.17) — default 80px icon when omitted.
+8. **Check brand consistency** (§4.7) — audit every CTA on the site before changing one.
+9. **Only then edit, mutate in place, save the FULL design back.** Never POST a fresh design — wipes other pages.
+10. **🚨 SCREENSHOT BEFORE DECLARING DONE.** After any meaningful section change — and ALWAYS before telling the expert "done" — open `browser--navigate_to_sandbox` to `/sites/<id>/editor?page=<key>` and `browser--screenshot` the Liquid preview. Look at it. Critique against §4.7 (CTA consistency), §4.17 (image sizing), §4.23 (white-on-white), §4.12 (full-width), §4.28 (maxWidth), and plain taste (composition rhythm, palette balance, type pairing). Iterate until it looks killer, THEN declare done. Cost: ~5–10s per screenshot — cheap insurance against shipping a "looks off but I can't say why" page. **Skip this only for trivial copy edits** (one headline, one paragraph) where the change is invisible to layout review.
+11. **Pattern-match against the exemplar library when stuck.** Call `getExemplarSites()` (or `getExemplarSites(['wellness', 'luxury'])`) to load admin-flagged "killer" reference sites with their full `design` JSON. Use them for composition rhythm, palette, type pairing, block choices — pattern-match, do NOT copy verbatim. Especially valuable for vague briefs ("make me a coaching site") and "this looks off but I can't say why" recoveries.
+
+**Symptom → first suspect (memorize this table):**
+
+| Symptom | First place to look |
+|---|---|
+| "Saved 200 OK but preview unchanged" | Prop names (§4.26) → editor `readField` gap (§4.29) |
+| "Padding/radius/bg color not applying" | camelCase + padding-as-object (§4.25) |
+| "Block visible in preview, missing on Kajabi" | Header/footer allowlist (§4.27) |
+| "Centered narrow in preview, full-bleed on Kajabi" | Section `maxWidth` (§4.28) |
+| "Hero image not showing, just a colored box" | Opaque bg over image (§4.6) or broken slot ref (§4.9) |
+| "Images are tiny/postage-stamp" | `feature.imageWidth` (§4.17) — default `"1200"` |
+| "Cards have no edges on white section" | White-on-white (§4.23) — tint the BLOCK |
+| "Headline weight differs preview vs Kajabi" | Explicit font weights missing (§4.22) |
+| "Buttons look mismatched across the site" | CTA consistency audit (§4.7) |
+| "Header button looks different / has weird elevation vs hero button" | `.btn` shadow not reset in customCss (`mem://reference/button-shadow-reset.md`) |
+| "Testimonial / pull quote looks like plain body copy on Kajabi" | Editorial copy needs inline-styled `<blockquote>`/`<cite>` (`mem://reference/inline-style-html-content.md`) |
+| "Footer titles centered but lists left-aligned" | Pro `.link_list__title` default not reset (`mem://reference/footer-pro-link-list-title-centered-default.md`) |
+| "Editor alignment toggle did nothing on a footer block" | Block needs all 3 shape props: `align` + `text_align` + `textAlign` (§4.29) |
+| "Feature card 'Explore →' button indented from card edge" | `.btn` base padding leaks into text-style buttons (`mem://reference/feature-text-button-padding-leak.md`) |
+| "Partial CSS override worked for color but not alignment/padding/shadow" | Override resets ONE property, Kajabi default still wins on the others — reset every property the default touches |
+| "Fake login form rendering on top of real form" | Auth pages composed (§4.10) — strip to header+footer |
+
+---
+
+### 4.32 📄 LANDING PAGE (`kind: 'landing_page'`) vs SITE (`kind: 'site'`)
+
+`sites.kind` is set at creation and locked. The two kinds share the engine but differ in scope:
+
+| Aspect | `kind: 'site'` | `kind: 'landing_page'` |
+|---|---|---|
+| Page count | Many (index/about/contact/blog/library/etc.) | One (`index` only) |
+| Page keys | Multiple, must include Kajabi system pages | Just `index` |
+| Dynamic pages | Required (`blog`/`library`/auth — §4.10) | N/A — single page only |
+| Header/footer | Shared across all pages | Single page, single header/footer |
+| Cloning a URL | Clone all pages (§4.24 Phase 1 maps domain) | Clone the single source URL only |
+| Export | Full site zip | Single landing page zip |
+| Adding pages | Routine (`page_keys` + `templates/<name>.liquid`) | NEVER — collapses to one page |
+
+**When the expert says "clone https://..." on a landing-page site:** scrape only the single URL (skip Firecrawl `map`), build only `index`, ignore the source's about/blog/etc. unless they explicitly ask for an inner page. See §4.24 Phase 0.
+
+**When in doubt which kind a fresh chat is:** `get-site-design` returns `kind` in the response. Always check before assuming.
+
+---
+
+### 4.33 🎨 BRANDING PANEL AWARENESS — `design.branding`
+
+The 🎨 toolbar in the editor writes `design.branding` (3 colors + 2 fonts: `colorPrimary`, `colorAccent`, `fontFamilyHeading`, `fontFamilyBody`). At export, `applyBrandingForExport()` (in `packages/engine/src/siteDesign/branding.ts`) merges these INTO `themeSettings`/`fonts` — but ONLY fills empty slots. Explicit `themeSettings` ALWAYS win.
+
+**Cascade order (highest priority first):**
+1. Explicit `themeSettings.color_button` / `font_family_heading` / etc. on the design
+2. `design.branding.colorAccent` → fills `themeSettings.color_button` + `color_accent` if empty
+3. `DEFAULT_BRANDING` (orange `#ff3e14` + Fira Sans/Open Sans) — last-resort fallback
+
+**When to use which:**
+- **Set `design.branding`** for the sitewide brand (Kajabi system pages — login/store/checkout — pick this up via the merged `themeSettings`).
+- **Set `design.themeSettings`** directly for fine-grained control (per-heading-level font weights, button radius, custom CSS targets — anything not in the branding panel's 5 fields).
+- **Set per-block props** (e.g. `buttonBackgroundColor`) ONLY when one CTA needs to differ from the sitewide button — and even then audit §4.7 first.
+
+**Round-trips through `config/export_report.json`** so re-importing a zip reconstructs `design.branding` (not just the merged `themeSettings`). Never strip it.
+
+---
+
+### 4.34 🚨 NEVER ship a site/landing page as a static HTML file or downloadable artifact
+
+🚨 **Verified failure mode (Kboges sales page, 2026-05-05).** When the expert pastes a long "build me a sales page" / "design me a landing page" / "create a site for X" prompt, the wrong response is to write `sales-page.html` + `styles.css` to `/mnt/documents/` and emit a `<presentation-artifact>`. The right response is to **GET → mutate → POST the real site's `design` JSON via `update-site-design`**. The expert's site lives in master's database; an HTML file is useless to them — they can't import it into Kajabi, can't preview it in the editor, can't iterate on it section-by-section.
+
+**The rule:** every "build / design / create / make me a [page|site|landing page]" request resolves to an `update-site-design` call against a real `siteId`. No exceptions.
+
+**If the request arrives without a `siteId`:** ask the expert for one (route in the editor iframe is `/sites/<siteId>`). Also ask whether to replace an existing page key (e.g. `index`) or add a new page (for `kind: 'site'` only — landing pages collapse to `index`). Do NOT invent an HTML mockup as a substitute "while we wait."
+
+**Forbidden workarounds — every one of these is wrong for a site/landing page request:**
+- ❌ Writing `*.html` / `*.css` to `/mnt/documents/`
+- ❌ Emitting `<presentation-artifact>` for any site content
+- ❌ Generating hero images via `imagegen` for a static HTML mockup (use `upload-site-image` against a real `siteId` instead)
+- ❌ "Let me draft the structure as HTML and we can convert it later"
+- ❌ Building a React component in the thin client to render the page locally
+
+**The single allowed flow** (from §3 of this file, and `knowledge/AGENTS.md` §3 for thin clients):
+1. Confirm/ask for `siteId` and target page key.
+2. `get-site-design` → load current `design`.
+3. Mutate the target page in place using existing block types (text/cta/feature/pricing_card/accordion/image/etc.) per all §4.x guardrails.
+4. For expert-provided images, upload via `upload-site-image` and wire the returned URL.
+5. `update-site-design` → save the FULL design back.
+6. Tell the expert to refresh the editor preview.
+
+**Symptom of the bug in chat history:** the prior AI turn ends with `<presentation-artifact path="*.html" ...>`, mentions writing files to `/mnt/documents/`, or opens with "Here's your sales page as HTML." If you see any of those patterns, the work is wrong — restart with the §3 flow against a real `siteId`. Do not mechanically "convert the HTML to JSON"; treat it as a fresh build with copy already drafted.
+
+---
+
+### 4.35 🪟 EDITOR SIDEBAR ANATOMY — what shows where (and what to expect after import)
+
+The editor sidebar (`packages/engine/src/shell/components/EditorSidebar.tsx`) renders three layers of sections, in order:
+
+1. **Header** (fixed, top) — the page's `kind: 'header'` section. One per site, shared across all pages.
+2. **Page sections** (reorderable) — the per-page `content`/`raw` sections in `design.pages.<currentPage>.sections`. These are the only sections that change when the expert switches pages in the page picker.
+3. **Footer(s)** (fixed, bottom) — Pro themes show BOTH `footer_pro` AND the standard `footer` as separate fixed rows. Standard themes show only `footer`. Per §9.2 (PRO_CAPABILITIES), mutual exclusion is author-managed via per-section `hide_on_desktop`/`hide_on_mobile` toggles — the sidebar always lists every footer instance present in the page, regardless of visibility.
+4. **Sitewide global sections** (fixed, under footers) — entries in `design.globalSections` for `exit_pop` and `two_step`. These are NOT per-page; they live at the design root and ship to every page on export. They render with a 🌐 globe icon to signal "site-wide overlay, not part of any one page".
+
+**Sitewide slots (header / footer / footer_pro / exit_pop / two_step) AUTO-SEED on every load.** The base-theme `layouts/theme.liquid` declares all of these unconditionally via `{% section "X" %}`. Whatever the layout declares, the sidebar must show — period. The data layer enforces this via two helpers in `packages/engine/src/siteDesign/sharedSlots.ts`, both wired into `mapRowToSite()` in `data/siteStore.ts`:
+
+- `embedSharedSections(design, baseTheme)` — re-injects `sharedHeader` / `sharedFooter` / `sharedFooterPro` into every page; on Pro themes auto-seeds blank entries for any missing footer slot so BOTH `footer` and `footer_pro` rows appear in the sidebar.
+- `ensureGlobalSections(design)` — auto-seeds blank `kind: 'raw'` entries for `exit_pop` + `two_step` in `design.globalSections` if missing. The list lives in `GLOBAL_SECTION_TYPES` — if Kajabi adds another sitewide slot to `theme.liquid` (e.g. `cookie_banner`), add it there.
+
+**Result:** an expert's site ALWAYS shows every layout-declared slot in the sidebar, regardless of whether the original import populated them. There is no "re-import the zip" recovery dance anymore. Storage stays minimal (only edited slots persist explicit content; auto-seeded blanks are filled in on read), and the live Kajabi site is unaffected either way — `mergeSettings()` in `exportEngine.ts` preserves untouched original zip keys byte-for-byte.
+
+**Don't manually inject these sections into the saved JSON.** If the sidebar is somehow missing a slot, the bug is in the auto-seed helper or its wiring — fix it there, not by writing empty entries into individual sites' `design` rows.
+
+**Adding a new sitewide slot to the layout:** if Kajabi (or we) add another `{% section "X" %}` to `layouts/theme.liquid`, append `{ type: 'X', name: '<label>' }` to `GLOBAL_SECTION_TYPES` in `sharedSlots.ts`. Every site picks it up on next load.
+
+---
+
+### 4.35aa 🚨 PRO SITE WITH BOTH FOOTERS — pick ONE, hide the other on BOTH breakpoints
+
+🚨 **Verified rule (2026-05-08).** On Pro themes the editor sidebar always shows BOTH a `footer` (Standard) row AND a `footer_pro` row, because `layouts/theme.liquid` declares both `{% section "footer" %}` and `{% section "footer_pro" %}` and the auto-seed (§4.35) injects whichever one isn't already populated. **If both footers contain real content, Kajabi renders BOTH stacked on every page** — the expert sees two footers, one above the other.
+
+**The rule — every Pro site (`base_theme` ending in `-pro`) MUST hide the Standard `footer` by default.** `footer_pro` is the canonical footer on Pro themes (it unlocks the rich block set per §4.27 and §4.35e); the Standard `footer` slot only exists because Kajabi's `layouts/theme.liquid` declares both. **ALWAYS** set `hide_on_desktop: "true"` + `hide_on_mobile: "true"` on the Standard `footer` section — no exceptions, no "decide which one to keep" judgment call. The only time you'd hide `footer_pro` instead is if the expert explicitly asks for the Standard footer (extremely rare; ask first).
+
+```jsonc
+{
+  "kind": "footer",
+  "slotId": "footer",          // the Standard footer (the one you're hiding)
+  "props": {
+    "hide_on_desktop": "true",
+    "hide_on_mobile": "true"
+  },
+  "blocks": [ /* keep blank or untouched — visibility is what matters */ ]
+}
+```
+
+**Never leave both footers visible** (live Kajabi stacks them). Both flags MUST be the literal string `"true"` (Kajabi schema enum), not boolean `true`. This is automatic — apply on every new Pro site build AND audit existing Pro sites; if the Standard `footer` lacks both flags, add them before declaring the site clean (add to §4.35ae checklist).
+
+🚨 **NEVER mutate the section `name` to indicate hidden state.** Do NOT rename a footer to `"Footer (hidden)"`, `"Footer — hidden"`, `"[hidden] Footer"`, or any other annotated label. The `name` is the editor sidebar label the expert sees; visibility is communicated by the `hide_on_desktop` / `hide_on_mobile` flags, full stop. The editor's sidebar already grays out / labels hidden rows from those flags — adding `(hidden)` to the name is duplicate, ugly, and pollutes the saved data permanently. Same rule applies to ANY section, not just footers: never encode state into `name`.
+
+**Pre-flight check on every Pro site save:** if the design contains both a `sharedFooter` (slotId `footer`) and a `sharedFooterPro` (slotId `footer_pro`), confirm exactly one has `hide_on_desktop` + `hide_on_mobile` set to `"true"`. If neither is hidden → live site shows two stacked footers. If both are hidden → live site shows no footer. Also confirm NEITHER footer's `name` contains `(hidden)` or any state annotation — if it does, strip the annotation.
+
+🚨 **Stale `__rawSettings` / `__importedSnapshot` will silently override your hide flags.** Verified failure mode (site `96d624db`, 2026-05-09): set `props.hideOnDesktop: true` + `props.hideOnMobile: true` (camelCase) on `sharedFooter`, save returns 200, refetch shows the new flags present — but the standard footer KEEPS rendering. Cause: imported sites carry `props.__rawSettings` (raw Kajabi snake_case settings from the original zip) and `props.__importedSnapshot` (the full original section JSON). Both objects had `hide_on_desktop: false` / `hide_on_mobile: false` from the original import, and the serializer's last-write-wins merge layered the stale `false` values BACK ON TOP of your new `true` values on the way to `settings_data.json`. Live Liquid then rendered the footer because the snake_case raw settings won.
+
+**The fix — when hiding a footer (or any section) on an imported site, write to ALL FOUR shapes simultaneously:**
+
+```jsonc
+{
+  "kind": "footer",
+  "slotId": "footer",
+  "props": {
+    "hideOnDesktop": true,
+    "hideOnMobile": true,
+    "hide_on_desktop": "true",        // snake_case Liquid sibling
+    "hide_on_mobile": "true",
+    "__rawSettings": {                 // ← MUST overwrite, not just camelCase
+      "hide_on_desktop": "true",
+      "hide_on_mobile": "true"
+      /* keep every other key from the original __rawSettings */
+    },
+    "__importedSnapshot": "...JSON.stringify of the snapshot with the two flags flipped to \"true\"..."
+  }
+}
+```
+
+`__importedSnapshot` is a JSON STRING (not an object) — `JSON.parse` it, mutate, `JSON.stringify` back. Don't just delete `__rawSettings` / `__importedSnapshot` — they carry every non-hide field from the import (block defaults, padding, colors) and dropping them resets the section to base-theme defaults.
+
+**Symptom → suspect this FIRST on imported sites:** "set hideOnDesktop, save 200, refetch shows it, footer still renders." Check `props.__rawSettings.hide_on_desktop` and the parsed `__importedSnapshot.settings.hide_on_desktop`. If either is `false`/`"false"`, that's what's winning. Same class of bug as §4.29 (snake_case vs camelCase storage drift) but at the import-snapshot layer instead of the editor-write layer.
+
+Standard themes (no `-pro` suffix) only have `footer`, so this rule does not apply.
+
+---
+
+### 4.35ab 🪟 ALWAYS seed `exit_pop` + `two_step` with the BASE THEME's default content blocks (never blank)
+
+🚨 **Rule for engine maintainers AND for any flow that creates/resets a sitewide popup slot.** The two sitewide popup sections (`exit_pop`, `two_step`) auto-seed via `ensureGlobalSections()` in `packages/engine/src/siteDesign/sharedSlots.ts` (§4.35). Today they seed **blank** — `{ kind: 'raw', type, name, settings: {}, blocks: {}, blockOrder: [] }`. That's wrong: the expert opens the popup row in the sidebar, sees nothing, and has no starting point. Kajabi's base themes ship REAL default content for both popups (a headline + body + email form + CTA in `exit_pop`; a click-to-open trigger + form in `two_step`) inside `sections/exit_pop.liquid` + `sections/two_step.liquid` `{% schema %}` `presets` / `default` block arrays.
+
+**The rule:**
+
+1. **Brand-new sites** (`createSite` / `createLandingPage` → `buildBlankDesign` / `buildLandingPageBlankDesign`): `design.globalSections` MUST include `exit_pop` AND `two_step` pre-populated with the matching base theme's default `settings` + `blocks` + `blockOrder` (parsed from the schema registry's `presets[0]` or `default_blocks` for that section type on that `base_theme`).
+2. **Imported sites** (`importSiteFromZip`): keep whatever the zip carried verbatim (already correct — don't touch).
+3. **Auto-seed on load** (`ensureGlobalSections`): when a slot is missing on an EXISTING site, seed it with the base theme defaults too — not blank. Read `base_theme` from the design and pull defaults from the schema registry the same way `buildBlankDesign` does.
+4. **Author-side (this AGENTS file consumers):** if you ever programmatically reset a popup (e.g. `delete design.globalSections[i]` then re-add), re-seed with base defaults — never with `{}`.
+
+**Why:** the expert should never see an empty popup editor row. The base theme's defaults are tasteful, on-brand-system, and immediately editable — they give the expert something concrete to mutate instead of a blank slate they don't know how to fill.
+
+**Where to source the defaults:** each base theme zip's `sections/exit_pop.liquid` and `sections/two_step.liquid` end with `{% schema %}` containing `presets` (Kajabi's "starter" content). The schema registry already parses these — extend `sharedSlots.ts` to read them via a helper like `defaultGlobalSectionContent(baseTheme, type)` and pass through `mapRowToSite()` / blank builders.
+
+**Pre-flight check for any future popup-related engine work:** scan for `blocks: {}` / `blockOrder: []` on any `exit_pop`/`two_step` seed path — that's the bug. Replace with the base theme defaults pulled from the registry.
+
+---
+
+### 4.35b 🖼️ IMAGE-TO-LABEL SEMANTIC MATCH (every card photo must depict its label)
+
+🚨 **Verified failure mode (Aurelian House Project Types, 2026-05-07).** When generating a grid of card images (services, project types, programs, tiers), each image MUST visually depict the thing its card label says. The trap: AI generates a batch of "luxury interior" photos and assigns them to labels in arbitrary order — so a foyer + staircase shot ends up labeled "New Construction," a bedroom labeled "Furnishing Projects" looks fine but a kitchen labeled "Major Renovations" is ambiguous, etc. The expert sees mislabeled cards and asks "did you mean to use this image for X?" — the answer is always no, you weren't paying attention to the label.
+
+**The rule — for every card with both an image and a heading/label:** before assigning an image, write down what the label promises and what visual evidence would prove it. Then either (a) generate an image that matches that promise specifically, or (b) pick an existing asset that does. Do NOT batch-generate "premium [industry]" photos and assign them by index.
+
+**Worked examples — what each label demands visually:**
+
+| Card label | What the photo MUST show | What it must NOT show |
+|---|---|---|
+| New Construction (interior design) | Custom home **exterior** mid-build or freshly completed; architectural shell | Furnished interior styling shot |
+| Major Renovations | Before/after pair, or a clearly-renovated kitchen/bath with construction context | Generic styled room |
+| Furnishing Projects | Fully styled finished room (bedroom, living, dining) with textiles + art in place | Empty room or exterior |
+| Branding / Logo Design | Logo mockup, brand collateral flat-lay, color palette card | Generic "creative workspace" photo |
+| Web Design | Screen showing actual site UI, device mockup with design work | Person typing on a laptop |
+| 1:1 Coaching | Two people in conversation, intimate setting | Group/seminar room |
+| Group Program | Cohort/community setting, multiple people engaged | Single person at a desk |
+| Strategy Session | Whiteboard, notes, planning artifacts | Stock "handshake" |
+
+**Pre-flight check on every image-bearing card grid:**
+1. List every card label in the section.
+2. For each label, name in one sentence what visual proof the image must carry.
+3. Check the assigned image (open the URL, look at it). Does it show that proof? If no → regenerate or reassign.
+4. Pay special attention to **labels that imply a specific phase or state** ("New Construction" = pre-furnishing, "Renovation" = mid-transformation, "Finished/Completed" = fully styled). Generic interior shots fail all three.
+
+**Why this exists:** it's tempting to generate a batch of "luxury interior design photography" and call it done — they all look beautiful and on-brand. But the expert is selling a **service catalog**, and a mismatched image undermines the credibility of the entire grid. One mislabeled card makes the expert wonder whether the AI understood the brief at all.
+
+**Pair this with §4.17:** image semantic match comes FIRST (does this picture prove this label?), then image SIZE (`imageWidth: "1200"`). Both must be right.
+
+---
+
+### 4.35a 📐 SECTION HEADINGS GO ON THEIR OWN ROW (width: "12")
+
+🚨 **Common silent layout bug.** When a section starts with a heading text block (eyebrow + `<h1>`/`<h2>`/`<h3>` + optional lede) followed by a content grid (3-up cards, 2-up split, etc.), the heading block MUST have `width: "12"` so it occupies its own full-width row. If the heading is authored at `width: "8"` or `"6"` and the next block is also sub-12 (e.g. a card at `width: "4"`), Kajabi's 12-column grid packs them into the **same row** — the heading sits next to the first card instead of above it. Preview shows it. Live site shows it. Looks broken.
+
+**The rule — every section's heading block(s) get `width: "12"` + `align: "center"` (or `"left"`):**
+
+```jsonc
+// ❌ Wrong — heading shares a row with the first card
+{ "type": "text", "props": { "width": "8", "text": "<h2>Selected Work</h2>" } },
+{ "type": "feature", "props": { "width": "4", ... } },
+{ "type": "feature", "props": { "width": "4", ... } },
+{ "type": "feature", "props": { "width": "4", ... } }
+
+// ✅ Right — heading occupies its own row, cards form a clean 3-up below
+{ "type": "text", "props": { "width": "12", "align": "center", "text": "<h2>Selected Work</h2>" } },
+{ "type": "feature", "props": { "width": "4", ... } },
+{ "type": "feature", "props": { "width": "4", ... } },
+{ "type": "feature", "props": { "width": "4", ... } }
+```
+
+**To narrow the heading's visual width** (per §4.28 — `maxWidth` is silently dropped), DON'T shrink the block's `width`. Instead either (a) keep `width: "12"` and let `align: "center"` + the heading's natural type size do the work, or (b) wrap the heading copy in a centered `<div style="max-width:720px;margin:0 auto">` inside the text HTML. Block grid stays at 12; visual width is controlled inside the block.
+
+**Pre-flight check on every section save:** if the section has any `text` block whose HTML contains `<h1`/`<h2`/`<h3` AND any subsequent block has `width < 12`, the heading block MUST be `width: "12"`. No exceptions. This pairs with §4.28 (use the 12-col grid for layout) and §4.12 (don't `fullWidth: true` the section).
+
+---
+
+### 4.35c 🚨 CTA ON DARK SECTION — emit BOTH camelCase AND snake_case button props (Liquid reads snake_case)
+
+🚨 **Verified failure mode (Aurelian House CTA section, 2026-05-07).** A `cta` block with `buttonBackgroundColor: "#F5EFE3"` + `buttonTextColor: "#3A2E22"` placed on a dark section (`background: "#3A2E22"`) renders **invisible / transparent on the live Liquid preview** — only the text "Inquire" shows in the dark cream color, no button fill. Cause: Pro's `block_cta.liquid` reads `btn_background_color` / `btn_text_color` / `btn_type` (snake_case schema names), NOT the camelCase prop names. When only camelCase is set on a `cta` block, the `readField` dual-shape fallback (§4.29) covers preview rendering for SOME blocks but NOT the Liquid pipeline reading from `settings_data.json` directly — there the snake_case keys must literally exist on the block.
+
+Compounding factor: Pro's `btn_type` defaults to `"dark"`, which uses `btn_background_color` as the bg. On a dark section you want `btn_type: "light"` (or you want the dark variant's bg slot to carry the cream color). Either way, you MUST emit the snake_case siblings.
+
+**The rule — for every `cta` block placed on a dark section (or any time the button needs to invert from sitewide), emit BOTH shapes:**
+
+```jsonc
+{
+  "type": "cta",
+  "props": {
+    "align": "center", "width": "12",
+    "buttonText": "Inquire", "buttonUrl": "/contact",
+    "buttonStyle": "solid", "buttonSize": "large",
+    "buttonBackgroundColor": "#F5EFE3", "buttonTextColor": "#3A2E22", "buttonBorderRadius": "0",
+    // 🚨 REQUIRED snake_case siblings for Liquid to render correctly:
+    "btn_type": "light",
+    "btn_style": "solid",
+    "btn_size": "large",
+    "btn_background_color": "#F5EFE3",
+    "btn_text_color": "#3A2E22",
+    "btn_border_radius": "0"
+  }
+}
+```
+
+**Pre-flight check on every CTA save:** if a `cta` block sits in a section whose `background` is dark (any color with luminance < 0.5), or if the button colors deliberately invert from the sitewide button (per §4.7's brand button), the block's props MUST contain the snake_case siblings (`btn_background_color`, `btn_text_color`, `btn_type`, `btn_style`, `btn_size`, `btn_border_radius`). On light sections where the sitewide button colors match, snake_case siblings are optional (the editor's `readField` covers the gap).
+
+**Symptom:** "the CTA button isn't showing — only the text is visible" / "the button background is missing on the dark section" / "Inquire shows as just text on the espresso CTA band." → check for missing snake_case siblings FIRST, before anything else.
+
+**Why this is its own rule (not §4.7 or §4.29):** §4.7 covers cross-site CTA consistency (which colors). §4.29 covers the editor `readField` dual-shape pattern for first-class blocks. THIS rule covers the specific cta-on-dark Liquid render gap that neither catches.
+
+---
+
+### 4.35d 📐 EQUAL-HEIGHT BLOCKS on multi-card grids (set the section toggle, don't eyeball it)
+
+🚨 **Verified 2026-05-07.** When a section contains a horizontal grid of card blocks (`feature`, `pricing_card`, `card`) where each card holds variable-length copy — different headline lengths, different bullet counts, different paragraph sizes — the cards render at **different heights** by default. The grid looks ragged: card 1 ends at 600px, card 2 at 720px, card 3 at 540px. CTAs at the bottom of each card sit at different vertical positions. The page reads as unfinished/amateur.
+
+**The rule — every multi-card grid in a single section gets `equalHeight: true` on the section's props.** Emit BOTH shapes per §4.29 (camelCase for the renderer, snake_case for any Liquid path that reads schema names directly):
+
+```jsonc
+{
+  "kind": "content",
+  "name": "Services Overview",
+  "props": {
+    "background": "#FBF8F2",
+    "paddingDesktop": { "top": "120", "bottom": "120" },
+    "equalHeight": true,
+    "equal_height": "true"
+  },
+  "blocks": [
+    { "type": "text", "props": { "width": "12", ... } },         // heading row
+    { "type": "feature", "props": { "width": "4", ... } },        // card 1
+    { "type": "feature", "props": { "width": "4", ... } },        // card 2
+    { "type": "feature", "props": { "width": "4", ... } }         // card 3
+  ]
+}
+```
+
+**When to set it:**
+- Any section with 2+ horizontal sibling cards (`width: "4"` × 3, `width: "6"` × 2, `width: "3"` × 4) where the cards carry independent body copy.
+- Pricing tier grids (3-up `pricing_card`).
+- Service/program/feature grids (`feature` blocks with photos + descriptions + CTAs).
+- Stat/metric rows where each cell has a label + number + caption of varying length.
+
+**When NOT to set it:**
+- Single-card sections (no siblings to align to).
+- Sections where the visual intent is staggered/asymmetric heights (rare — confirm with expert).
+- Heading-only or copy-only sections (no cards).
+
+**Pre-flight check on every multi-card section:** if the section has 2+ blocks at the same sub-12 width AND those blocks carry text/cta content, set `equalHeight: true` + `equal_height: "true"`. Don't wait for the expert to point out the ragged grid.
+
+---
+
+### 4.35e 🚨 `footer_pro` HAS NO `logo` BLOCK — use `text` (wordmark) or `image` (logo image) instead
+
+🚨 **Verified silent-drop on Pro themes (2026-05-07).** Standard `footer` accepts `logo`. **Pro `footer_pro` does NOT** — its allowlist (verified in `schemas.generated.json`) is `accordion, audio, assessment, blog, cta, countdown, code, card, event, event_video, feature, form, image, multi_video, offer, pricing, text, video, video_embed, external_widget, link_list, copyright, social_icons`. Notice: no `logo`. A `logo` block placed in a Pro footer is silently dropped on export — preview shows the brand wordmark, live Kajabi shows nothing where the logo used to be.
+
+**The rule — when authoring a Pro footer (any site whose `base_theme` ends in `-pro`):**
+- **Text wordmark** → use a `text` block with the brand name wrapped in styled inline HTML (`<p style="font-family:...;font-size:...;letter-spacing:...;color:..."><a href="/" style="color:inherit;text-decoration:none;">BRAND</a></p>`).
+- **Image logo** → use an `image` block (`src` = logo URL, `imageWidth` = pixel cap, `imageHref` = `/`).
+- NEVER use `logo` in `footer_pro`. NEVER.
+
+**Standard footer (themes WITHOUT `-pro` suffix) is unaffected** — `logo` works there as documented in §4.27.
+
+**How to know which footer you're authoring:** the section's `kind` is always `'footer'` in the design tree, but on export the serializer emits `footer_pro` for Pro themes. Check `design.baseTheme` (or the site's `base_theme` column) — if it ends in `-pro`, the footer schema is `footer_pro` and `logo` is forbidden.
+
+**Pre-flight check on every footer save:** if the site is Pro AND any block in a `footer` section has `type: 'logo'`, convert it before saving:
+- `logoType: 'text'` → `text` block with styled `<p>`
+- `logoType: 'image'` → `image` block with `src` + `imageWidth` + `imageHref: '/'`
+
+This is automatic knowledge — every AI session must check `base_theme` before authoring a Pro footer and pick the right block type without being told. Verified per-theme allowlists live in §4.27's table.
+
+**Treat `footer_pro` like a regular content section.** Pro footers are a 12-column block grid — use the blocks AS grid items. The wordmark `text` block, link-list columns, social row, newsletter form, etc. are placed side-by-side via `width: "3"`/`"4"`/`"6"` and stack vertically when their widths sum past 12. Default brand-line + 2 link columns layout = `text width:"4"` + `link_list width:"4"` + `link_list width:"4"` (sums to 12, single row). Three columns + a newsletter `form` = `width:"3"` × 4. The `copyright` block typically gets `width:"12"` so it lands on its own row at the bottom. NEVER leave block widths at defaults that don't sum to 12 — the result is whitespace gaps or unbalanced columns. Apply §4.35d (`equalHeight: true` + `equal_height: "true"` on the footer's props) when columns hold uneven copy.
+
+---
+
+### 4.35f 🚨 HEADER `logo` BLOCK — typography fields are SILENTLY IGNORED; use `customCss` to match the footer wordmark
+
+🚨 **Verified 2026-05-08.** The header `logo` block accepts `logoTextFontFamily` / `logoTextFontSize` / `logoTextFontWeight` / `logoTextLetterSpacing` props in our editor, but Pro's `snippets/shared_block_logo.liquid` only emits `color` and `width` — every other typography field is dropped. So a header wordmark authored with the same font/size/weight/letter-spacing as the footer's inline-styled `text` wordmark renders as plain default `<p class="logo__text">` (browser default font, default weight, no tracking) on the live site. Footer looks gorgeous; header looks generic.
+
+**The asymmetry to internalize:**
+- **Footer wordmark** uses a `text` block with inline-styled HTML → all typography survives (per §4.35e).
+- **Header wordmark** MUST use a `logo` block (per §4.27 — `text` is silently dropped from header) → typography props go nowhere → MUST be styled via `design.customCss`.
+
+**The rule — every site with a text-wordmark header MUST emit matching `customCss` targeting `.logo__text`:**
+
+```css
+.logo .logo__text, a.logo .logo__text {
+  font-family: 'Cormorant Garamond', serif !important;
+  font-size: 22px !important;
+  font-weight: 500 !important;
+  letter-spacing: 4px !important;
+  margin: 0 !important;
+}
+```
+
+Use the SAME font/size/weight/letter-spacing values as the footer wordmark's inline styles so the brand reads identically top and bottom. `!important` is required — Pro's stylesheet sets a default `.logo__text` weight that wins otherwise.
+
+**The mental model — "if you can style the text in the footer, you can style the logo in the header."** The expert sees one brand wordmark in two places; you must make both render the same way despite the underlying schema mismatch.
+
+**Pre-flight check on every header save where `logo` block has `logoType: "text"`:** the site's `design.customCss` MUST contain a `.logo__text` rule with the same typography as the footer wordmark. If not, add it before saving.
+
+---
+
+### 4.35ac 🌱 NEW WEBSITES ALWAYS SEED EVERY KAJABI SYSTEM PAGE FROM THE BASE THEME (never minimal blank)
+
+🚨 **Engine-side rule (engine 0.7.57+).** When `createSite` runs (`kind: 'site'`), the seed design MUST come from importing the chosen base theme's own `config/settings_data.json` — not from a hand-authored minimal `buildBlankDesign` baseline. The base theme zip already ships full default content for EVERY Kajabi system page (`index`, `about`, `page`, `contact`, `blog`, `blog_post`, `library`, `store`, `thank_you`, `404`, `member_directory`, `announcements`, `blog_search`, `newsletter_*`) plus `exit_pop` + `two_step`. Importing it gives the expert the same starting point they'd get downloading the raw Kajabi theme — every system page populated, none missing.
+
+Implemented in `seedDesignFromBaseTheme()` (`packages/engine/src/data/siteStore.ts`): fetches `BASE_THEME_URLS[baseTheme]` → runs `importSiteFromZip(blob)` → uses the resulting `design` as the row's seed. Falls back to `buildBlankDesign(brand)` only if the fetch/import errors. `buildBlankDesign` is no longer the primary seed path for websites — it's a last-resort safety net.
+
+**Landing pages (`kind: 'landing_page'`) are NOT affected** — they intentionally collapse to a single `index` page; `createLandingPage` still uses `buildLandingPageBlankDesign`.
+
+**Pre-flight on any future seeding/blank-builder change:** the rule is "every Kajabi system page must exist on a fresh site, populated with the base theme's own defaults." If you add a new system page to Kajabi's lineup or a new sitewide slot, the right fix is to update the base theme zip — `seedDesignFromBaseTheme` picks it up automatically. Don't hand-author system page seeds in `blank.ts`.
+
+---
+
+### 4.35ad 🚨 STYLE GUIDE FIRST, BLOCK OVERRIDES SECOND, CUSTOM CSS LAST RESORT (cascade discipline — read before authoring ANY styling)
+
+🚨 **The single most repeated styling mistake.** When the AI builds a new site, the wrong instinct is to reach straight for `customCss` (or inline `style="..."` in HTML, or per-block overrides) to set fonts, button colors, heading sizes, spacing, etc. That's backwards. Kajabi's style guide (`themeSettings`) is **template-wide** and is the ONLY layer where typography/colors/buttons can be edited from Kajabi's own UI by the expert later. Anything you put in `customCss` is invisible to the style guide editor, can't be tweaked from Kajabi, and silently overrides whatever the expert sets in the UI — leaving them confused why their style-guide changes have no effect.
+
+**The cascade — apply in this exact order, every time:**
+
+1. **`themeSettings` (style guide) FIRST.** This is the default for **every** styling decision: heading font, body font, font weights, line heights, font sizes per heading level, body color, primary/accent colors, button colors (dark+light pair), button border radius, button font weight, form input styles. Standard themes use the Standard fields (`font_family_heading`, `font_weight_heading`, `color_button`, etc.); Pro themes use BOTH the Standard fields AND the Pro custom-font/button/form overrides (`use_custom_fonts: "true"` + `override_h<N>_font_styles` + `select_custom_h<N>_font` + value enums per `mem://reference/pro-custom-fonts-value-formats.md`). **Build the entire style guide BEFORE composing a single page** — per §4.30 (anatomy of a new site build).
+
+2. **Per-block overrides SECOND** — only when ONE block needs to differ from the sitewide style. Example: a single accent CTA on a hero that uses the LIGHT button pair instead of the dark default → set `btn_type: "light"` on that one CTA. Or one pricing card highlighted in a different brand color than the others → set `backgroundColor` + `buttonBackgroundColor` on that one card. **Never use per-block overrides as a substitute for setting the sitewide style** — if every CTA on the site uses the same custom color, that color belongs in `themeSettings.color_button`, not on every CTA's `buttonBackgroundColor`.
+
+3. **`customCss` LAST RESORT** — only when (a) the style guide genuinely cannot express the style (e.g. targeting a Kajabi-rendered element with no schema field, like §4.35f's `.logo__text` header wordmark typography that Pro's `shared_block_logo.liquid` drops), OR (b) you need a sitewide CSS rule that has no themeSettings equivalent (rare). **Custom CSS is invisible to the style guide editor** — every rule you add is a rule the expert cannot tweak from Kajabi's UI, and silently overrides whatever they set there.
+
+4. **Inline `style="..."` in block HTML is NOT part of the normal styling workflow.** Treat it as effectively forbidden for sitewide or repeated styling. **Never** use inline HTML styles for recurring typography or button styling once the Style Guide exists — that includes `h1–h6`, ledes, eyebrow/kicker text, paragraph/body copy, pull-quote systems, repeated link treatments, or CTA/button styling. If the expert wants a **specific button** customized, do it on the relevant **`cta` block's custom settings / block props**, not in `customCss` and never in inline HTML. The only acceptable inline styling is truly content-specific decoration that cannot live anywhere else (e.g. one accented word in a heading, one inline divider, one one-off emphasized phrase). If you ever must choose an inline text color for that kind of one-off accent, determine dark vs light from the section's **hex background color only** — never from opacity, overlays, or the presence of a background image.
+
+**For fonts specifically — the canonical procedure:**
+
+- **Pro themes (base_theme ends in `-pro`):** use the Pro custom font system. Set `themeSettings.use_custom_fonts: "true"`, link the Google/Adobe/self-hosted font via `font_link_*` fields, then set `font_family_primary_name` (+ optional `font_family_accent_name`). Apply sitewide via `override_heading_font_styles: "true"` + `select_custom_all_headings_font: "primary"` (per `mem://reference/pro-all-headings-font-field-id.md` — singular toggle, plural child fields). For per-element control add `override_h<N>_font_styles: "true"` + `select_custom_h<N>_font` + weight + line-height + sizes per §4.22.
+- **Standard themes:** use `themeSettings.font_family_heading` + `font_family_body` (Google Font name) + `font_weight_heading` + `font_weight_body` + `line_height_heading` + `line_height_body`.
+- **Only fall back to `customCss` when:** (a) the font isn't on Google Fonts AND can't be linked via Pro's `font_link_*`, OR (b) you need to style a Kajabi-rendered element with no schema field (e.g. `.logo__text` per §4.35f, `.pricing__heading`, `.btn--text` text-link variants beyond what Pro exposes).
+
+**For colors specifically:**
+- Sitewide brand colors → `design.branding` (3 colors, fills empty `themeSettings` slots) per §4.33, AND/OR explicit `themeSettings.color_primary` / `color_accent` / `color_button` / `color_button_text`.
+- Section background → section's `background` prop.
+- One-off block tints → block's `backgroundColor` chrome prop.
+- NEVER hand-write `:root { --pathx-color-* }` or `body { color: ... }` into `customCss` — it bypasses the style guide.
+
+**For buttons specifically:**
+- Sitewide button look → `themeSettings.color_button` + `color_button_text` + `btn_border_radius` (Standard) OR Pro's button overrides (`view_advanced_button_customizations: "true"` + `btn_font_weight` + sizes per §4.22).
+- Per-CTA variation → block-level button props per §4.7's CTA consistency rule (still picks up sitewide via inheritance; only override what differs).
+- NEVER hand-write `.btn { background: #... }` into `customCss` — it bypasses every per-block override.
+
+**Symptom mapping → this rule was violated:**
+- "I changed the heading font in the style guide but nothing happened" → `customCss` has a `body h1 { font-family: ... }` rule with higher specificity (see `mem://feature/font-controls-before-css.md`).
+- "The expert can't change colors from Kajabi" → colors were hardcoded in `customCss` instead of `themeSettings.color_*`.
+- "Every page uses the same custom font but the style guide font picker shows Inter" → font was set via `customCss` `@import` + `body { font-family }` instead of `themeSettings.font_family_*`.
+- "I tweaked one CTA's color but now ALL CTAs changed" → color was put in `customCss .btn` instead of the one block's `buttonBackgroundColor`.
+
+**Pre-flight check on every new site build AND every existing-site styling edit:**
+1. Open `design.themeSettings`. Are the fonts set there? Heading + body weights + line-heights? Button colors + radius? If NO → set them via `themeSettings` FIRST. Don't touch `customCss` until step 4.
+2. Open `design.customCss`. Does it contain typography rules (`font-family`, `font-weight`, `line-height` on body/h1/h2/etc.) that DUPLICATE what `themeSettings` should be expressing? If YES → migrate them into `themeSettings` (Standard fields + Pro overrides as appropriate) and delete from `customCss`.
+3. Does `customCss` contain color rules (`color`, `background-color`) on body/sections/buttons that DUPLICATE `themeSettings.color_*`? If YES → migrate.
+4. Walk every block HTML field (`text`, `html`, rich text) and strip any inline `style="..."` that is carrying recurring typography/button system duties. If the same treatment appears more than once, it belongs in `themeSettings`, a block prop, or the smallest possible `customCss` exception — not inline.
+5. ONLY rules that survive in `customCss` are ones genuinely impossible to express in the style guide (e.g. `.logo__text` per §4.35f, complex selectors targeting Kajabi-rendered DOM, animations, `@media` queries beyond Pro's mobile font sizes).
+
+**Repair workflow when a site was styled the wrong way:**
+1. Remove all inline HTML typography/button styling first.
+2. Strip duplicated sitewide button/color/font rules out of `customCss`.
+3. Strip repeated per-block button overrides that are just standing in for the global button system.
+4. Rebuild the Style Guide (`themeSettings`) completely.
+5. Add back only the minimal justified block-level exceptions (usually a specific `cta` block variant).
+6. Add back only the minimal justified `customCss` exceptions.
+
+**Why this exists:** the expert paid for Kajabi's style guide system. Every styling decision the AI hardcodes in `customCss` is a decision the expert can't change later without editing code. The style guide is the contract between the AI build and the expert's ongoing customization — honor it.
+
+See `mem://reference/style-guide-cascade-discipline.md` for the full reference and worked examples.
+
+---
+
+### 4.35ae ✅ NEW SITE / SITE-CLEANUP CHECKLIST — the four things that MUST be true on every `kind: 'site'`
+
+🚨 **The single consolidated checklist for "build me a new site" AND "audit/clean this existing site".** Every one of these is already enforced by an upstream rule (cross-referenced below), but experts repeatedly find sites in the wild that violate one or more of them. Walk this list explicitly on every new build AND whenever an expert asks you to "clean up", "polish", "fix", or "make this site right".
+
+**The four invariants:**
+
+1. **Both popups (`exit_pop` + `two_step`) contain the base theme's default content blocks** — never blank. (§4.35ab + `mem://reference/popup-slots-seed-with-base-defaults.md`.) For new sites this is automatic via `seedDesignFromBaseTheme()` importing the base theme zip on `createSite`. For existing sites missing popup content, re-seed from the base theme's `sections/exit_pop.liquid` + `sections/two_step.liquid` `{% schema %}` `presets[0]` (or extract from the base theme zip's `config/settings_data.json` `current.sections.exit_pop` / `two_step`). The expert should see the SAME starter content they'd get downloading the raw Kajabi theme.
+
+2. **Every Kajabi system page is populated with base theme defaults** — never missing, never empty. (§4.35ac + `mem://reference/new-websites-seed-from-base-theme.md`.) Required pages on `kind: 'site'`: `index`, `about`, `page`, `contact`, `blog`, `blog_post`, `library`, `store`, `thank_you`, `404`, `member_directory`, `announcements`, `blog_search`, `newsletter` + `newsletter_post` + `newsletter_subscribe`, `login`, `forgot_password`, `reset_password`. New sites get this automatically. For existing sites missing any of these pages, import the base theme zip via `importSiteFromZip(BASE_THEME_URLS[base_theme])` and merge the missing `pages` + `pageKeys` entries into the design. (Reminder: `page`, `login`, `register`, `forgot_password`, `reset_password` MUST stay header+footer only per §4.10/§4.11 — base theme defaults already comply.)
+
+3. **All sitewide typography lives in `themeSettings`, NOT in `customCss`.** (§4.35ad + `mem://reference/style-guide-cascade-discipline.md`.) Pro themes: `use_custom_fonts: "true"` + `font_link_*` + `select_custom_all_headings_font: "primary"` + per-element overrides per §4.22. Standard themes: `font_family_heading` / `font_family_body` + `font_weight_*` + `line_height_*`. **Audit every existing site:** if `design.customCss` contains `@import url(fonts.googleapis...)`, `body { font-family: ... }`, `:root { --pathx-font-* }`, or any selector setting `font-family`/`font-weight`/`line-height`/`font-size` on `body`/`h1`–`h6`/`p` → MIGRATE those rules into `themeSettings` and DELETE them from `customCss`. The only typography rules allowed to remain in `customCss` are ones targeting Kajabi-rendered DOM with no schema field (e.g. `.logo__text` per §4.35f, `.pricing__heading`).
+
+4. **All sitewide colors and button styling live in `themeSettings`, NOT in per-block overrides or `customCss`.** (§4.7 + §4.35ad.) Sitewide button look = `themeSettings.color_button` + `color_button_text` + `btn_border_radius` + Pro `btn_font_weight` + sizes (per §4.22). Sitewide brand colors = `design.branding` + explicit `themeSettings.color_primary` / `color_accent` / `color_button*`. **Audit every CTA on the site:** if every `cta` block is hardcoding the SAME `buttonBackgroundColor` / `buttonTextColor` / `btn_*` siblings, those colors belong in `themeSettings.color_button` / `color_button_text` — strip the per-block overrides and let inheritance work. Per-block overrides are reserved for the ONE CTA that genuinely differs (e.g. light pair on a dark hero). Same for `customCss`: any `:root { --pathx-color-* }`, `body { color: ... }`, `.btn { background: ... }` rule → migrate to `themeSettings`, delete from `customCss`.
+
+**Pre-flight script for an existing-site audit pass** (run mentally before declaring "this site is clean"):
+
+```
+[ ] design.globalSections has BOTH exit_pop AND two_step, each with non-empty blocks/blockOrder
+[ ] design.pageKeys includes every Kajabi system page listed above
+[ ] design.customCss contains ZERO font-family / font-weight / line-height / font-size rules on
+    body/h1-h6/p (except .logo__text and other Kajabi-rendered DOM elements with no schema field)
+[ ] design.customCss contains ZERO color rules on body/sections/.btn that duplicate themeSettings
+[ ] design.themeSettings.font_family_heading + font_family_body (Standard) OR Pro custom fonts
+    (use_custom_fonts:"true" + font_link_* + select_custom_all_headings_font:"primary") are set
+[ ] design.themeSettings has explicit font_weight_heading / font_weight_body / line_height_*
+    (per §4.22 — never rely on Kajabi defaults)
+[ ] design.themeSettings.color_button + color_button_text + btn_border_radius are set sitewide
+[ ] Every cta block's button props either match themeSettings (and can be stripped) OR
+    deliberately differ (and the difference is documented by visual intent — e.g. dark hero CTA)
+[ ] sharedHeader is BRANDED (custom logo/wordmark, real nav menu, CTA button matching site
+    palette) — NOT the base-theme default "Encore"/placeholder header (per §4.35an)
+[ ] sharedFooter / sharedFooterPro is BRANDED (brand wordmark/logo, real link columns,
+    on-brand colors/typography, copyright) — NOT base-theme placeholder rows (per §4.35an)
+[ ] Every generated person/figure image has been visually inspected for anatomy defects
+    (limbs, hands, faces) BEFORE wiring into the site (per §4.35ao)
+```
+
+**For new site builds:** the engine handles invariants #1 and #2 automatically (base theme seed). YOU are responsible for #3 and #4 — set the style guide BEFORE composing pages, per §4.30 (anatomy of a new site build).
+
+**For existing-site cleanup:** all four are your responsibility. Don't tell the expert "the site looks good" until every checklist item is true.
+
+**Why this consolidated rule exists:** experts repeatedly discover their AI-built site has hardcoded fonts in customCss (so changing the heading font in Kajabi's style guide does nothing), or empty popups (so the editor row is blank), or missing system pages (so the live site 404s on /library). All four causes share the same fix shape ("apply at the right layer of the cascade") and all four can be checked in one pass — so make it one pass.
+
+---
+
+### 4.35af 🎨 SYSTEM PAGES MUST MATCH THE REST OF THE SITE (hero on `library` + `store` especially)
+
+🚨 **Verified gap.** New websites seed every Kajabi system page from the base theme defaults (§4.35ac), which is great for STRUCTURE but the seeded content is generic base-theme copy/imagery — generic stock photos, "Welcome to your library" placeholder headlines, default brand-neutral colors. After branding the homepage + about + services, the expert clicks into `/library` or `/store` and sees a page that looks like a different site: stock hero photo, generic copy, mismatched type, no brand voice. They (correctly) report "the library page doesn't match my site."
+
+**The rule — when building or branding a new website, EVERY Kajabi system page that has an authored intro/hero section above its dynamic content (`library`, `store`, `blog`, `blog_post`, `thank_you`, `404`, `member_directory`, `announcements`, `newsletter*`, `blog_search`) MUST have its hero/intro updated to match the rest of the site:**
+
+1. **Imagery** — replace base-theme stock photos with on-brand images. Either reuse a hero image already on the site (homepage hero, about hero) or generate/upload a new one matching the established art direction. NEVER leave the seeded base-theme stock photo.
+2. **Copy** — rewrite the seeded headline + lede in the brand's voice (same tone, vocabulary, length-rhythm as the homepage hero). Generic "Welcome to your library" / "Browse our store" placeholders are never acceptable on a branded site.
+3. **Styling** — confirm the hero section's `background`, text colors, button styling, padding rhythm, and section `name` match the rest of the site's content sections. Inherit `themeSettings` for typography (per §4.35ad) — don't hardcode different fonts/colors here.
+4. **Composition** — the hero structure should mirror other intro sections on the site (same eyebrow + h1 + lede + optional CTA pattern, same width primitives per §4.28, same `equalHeight` discipline if it has cards, etc.).
+
+**MOST IMPORTANT — `library` and `store` heroes.** These are the two pages every paying Kajabi customer hits regularly (members log in → land on library; visitors browse → land on store). A mismatched hero here is more visible than anywhere else on the site. **Never ship a new website without explicitly branding both.**
+
+**The rest of the page stays dynamic** per §4.10 — `library` body MUST be `{ kind: "raw", type: "products" }`, `blog` MUST be `{ kind: "raw", type: "blog_listings" }`, `blog_post` MUST be `{ kind: "raw", type: "blog_post_body" }`. ONLY the hero/intro `content` section above the raw section is yours to brand. Always pass branded `settings` to the raw section too (`background_color`, `text_color`, `btn_*`) so dynamic content matches.
+
+**Auth pages (`login`, `register`, `forgot_password`, `reset_password`) and `page` are EXEMPT** — they MUST stay header+footer only per §4.10 / §4.11. Branding flows to them through `themeSettings` (button colors, fonts, form input styles), not through composed hero sections.
+
+**Pre-flight check on every new site build AND every branding pass:** walk every system page in `design.pages`. For each page that's allowed to have a hero (`library`, `store`, `blog`, `blog_post`, `thank_you`, `404`, `member_directory`, `announcements`, `newsletter*`, `blog_search`), confirm the intro `content` section above the raw/body section uses on-brand imagery, on-brand copy, on-brand colors, and inherits typography from `themeSettings`. If it still has base-theme defaults, brand it before declaring the site done.
+
+**Add this to §4.35ae's checklist as item #5** for site cleanup audits: "Every system page hero (especially library + store) matches the rest of the site's brand — no leftover base-theme stock imagery or placeholder copy."
+
+---
+
+### 4.35ag 🚨 FEATURE BLOCK IMAGES MUST BE SQUARE — always set `imageBorderRadius: "0"` + `image_border_radius: "0"` (every theme, every time)
+
+🚨 **Verified failure mode (Pro Functionality test site, 2026-05-08; previously seen on Encore themes — `mem://reference/encore-feature-image-circle-default.md`).** Every Kajabi base theme (Streamlined, Streamlined Pro, Encore, Encore Pro) ships theme CSS that auto-rounds `feature` block images into circles when `image_border_radius` is unset. Result: every service/program/team card photo renders as a tiny round portrait — looks terrible on premium/editorial sites and is invisibly wrong on every theme by default.
+
+**The rule — EVERY `feature` block with an `image` set MUST emit BOTH:**
+
+```jsonc
+{
+  "type": "feature",
+  "props": {
+    "image": "https://...",
+    "imageWidth": "1200",            // per §4.17
+    "imageBorderRadius": "0",         // camelCase for engine
+    "image_border_radius": "0"        // snake_case for Liquid (per §4.29 dual-shape)
+  }
+}
+```
+
+No exceptions. If the expert genuinely wants rounded/circular feature images, they will explicitly ask — until then, square is the only correct default.
+
+**Sitewide reset in `customCss`** (belt + suspenders — emit on every new site per §4.30 step 3a, alongside the button-shadow / text-button-padding / footer-link-list-title resets):
+
+```css
+/* Force square feature images (every Kajabi theme auto-rounds them by default) */
+.feature .feature__image, .feature__image img { border-radius: 0 !important; }
+```
+
+**Pre-flight check on every site build AND every site edit:** walk every `feature` block in the design. If `image` is set AND `imageBorderRadius` is missing/empty/non-zero, set BOTH props to `"0"`. Confirm `customCss` contains the `.feature__image` reset rule. Symptom of skipping this: "the service card photos are tiny circles" / "why are my team photos round" / "the project images look like profile pics."
+
+---
+
+### 4.35ah 🚨 ANY GRID OF SIBLING IMAGES (feature, image, card, pricing_card) MUST SHARE THE SAME ASPECT RATIO — NO EXCEPTIONS
+
+🚨 **THIS RULE APPLIES TO `image` BLOCKS TOO, NOT JUST `feature`.** Verified repeat offender — the expert has flagged this multiple times across multiple sites. The trap: AI generates 3 images for a "Moments" / "Gallery" / "Process" / "Services" row, each at a different prompt that returns a different ratio (one portrait 3:4, one square 1:1, one landscape 4:3). When laid out as siblings at `width: "4"` × 3 (or `"6"` × 2, `"3"` × 4), every image renders at a different height. The row looks ragged and unprofessional. `equalHeight: true` does NOT save you — it equalizes CARD height, not IMAGE height.
+
+**THE ABSOLUTE RULE — applies to every block type that renders an image:**
+
+> **Before generating ANY set of 2+ sibling images that will sit in the same horizontal row, decide ONE aspect ratio (4:3, 3:2, 1:1, 16:9 — pick one) and generate EVERY image in the set at that exact ratio.** Pass the same `aspect_ratio` parameter to `imagegen` for every image. Never mix ratios within a row.
+
+This applies to: `feature` grids, `image` grids/galleries (← THE ONE PEOPLE FORGET), `pricing_card` rows with header images, `card` grids, any `<ContentSection>` containing 2+ sibling image-bearing blocks at matching `width`.
+
+**Pre-generation checklist (MANDATORY — run BEFORE calling `imagegen`):**
+
+1. Count the sibling image blocks in the section.
+2. Pick ONE aspect ratio for the whole set (default to `4:3` for editorial grids; `1:1` for portraits; `16:9` for cinematic).
+3. Generate every image with that exact ratio. NEVER let the model "pick what fits the prompt" — the prompt picks the subject; YOU pick the ratio.
+4. After upload, also enforce in CSS as belt-and-suspenders (see below).
+
+**Always-emit CSS guardrail (add to `customCss` on EVERY new site, scoped to the section via `customCssClass`):**
+
+```css
+/* Generic enforcement for any tagged image grid */
+.uniform-grid .image, .uniform-grid .image__image, .uniform-grid .image img,
+.uniform-grid .feature .feature__image, .uniform-grid .feature__image img {
+  aspect-ratio: 4 / 3 !important;
+  width: 100% !important;
+  height: auto !important;
+  object-fit: cover !important;
+  max-width: none !important;
+}
+.uniform-grid .image { overflow: hidden !important; }
+```
+
+Then set `customCssClass: "uniform-grid"` (+ `custom_css_class: "uniform-grid"` per §4.29 dual-shape) on every section that holds a multi-image grid. This guarantees uniform heights even when the source images differ — `object-fit: cover` will crop, but a uniform crop is infinitely better than a ragged row.
+
+**Pre-flight check on EVERY save that touches a multi-image section:** open every image URL in the row and check the ACTUAL pixel dimensions (for example via `identify`, PIL, or by inspecting the downloaded files) — do **not** assume the prompts or filenames match. If the row contains mixed ratios → do **not** ship it. Either (a) regenerate/re-crop the odd images to the chosen ratio, or (b) add a section-specific clamp class (`customCssClass: "work-grid-square"`, `"moments-grid-4x3"`, etc. — not one generic sitewide class reused blindly) and force ONE ratio with `aspect-ratio` + `object-fit: cover`. Both is best.
+
+**Symptom mapping (any of these = check this rule FIRST, before anything else):**
+- "the images in this row are different sizes / heights"
+- "the photos aren't aligned"
+- "this row/grid looks ragged / off / broken"
+- "I told you to make the images the same ratio" (← the expert has now said this multiple times — do not let it happen a third time)
+- "the cards aren't aligned even though I set equalHeight"
+- "the CTAs sit at different heights across the row"
+
+**Current failure pattern to prevent:** one image in the row is 16:9 and the other two are 1:1, but the section was never tagged with a ratio-enforcing class, so the cards render at different heights even though `equalHeight` is on. If you see mixed source ratios, assume the row is broken until you have either regenerated the assets OR verified a section-level `aspect-ratio` clamp is present.
+
+**Pair with:** §4.17 (`imageWidth: "1200"`), §4.35ag (`imageBorderRadius: "0"` + `image_border_radius: "0"` on every feature image), §4.35d (`equalHeight: true` + `equal_height: "true"` on the section), §4.35b (image-to-label semantic match).
+
+---
+
+### 4.35ai 🚨 PRO SLIDERS DEFAULT TO `transitionEffect: "slide"` — never `"fade"` unless explicitly asked
+
+🚨 **The default for every Pro slider is `transitionEffect: "slide"` (and the matching snake_case `transition_effect: "slide"` per §4.29 dual-shape).** Never use `"fade"` unless the expert explicitly asks for "fade", "crossfade", "fade between slides", or describes a fullscreen 1-up testimonial crossfade pattern.
+
+**Why:** `fade` silently forces `blocksPerSlide` to 1 (per §4.20 + `mem://reference/slider-fade-stacks-slides.md`) — a 3-up grid carousel authored with `fade` renders ONE card at a time and looks broken next to a sibling section using `slide`. `fade` also requires an injected `fadeEffect.crossFade` CSS workaround because Pro's `section.liquid` forgets to set it. `slide` is the safe, expected default for any multi-up grid carousel (services, testimonials in a 2/3-up grid, logos, pricing tiers, blog posts).
+
+**The rule — every `enableSlider: true` section:**
+
+```jsonc
+{
+  "props": {
+    "enableSlider": true,
+    "transitionEffect": "slide",       // ← DEFAULT, every time
+    "transition_effect": "slide",      // dual-shape per §4.29
+    "blocksPerSlide": 3,                // or 2/4 — only "slide" honors this
+    "block_offset": 1                   // skip leading intro block(s) per §9.3a
+  }
+}
+```
+
+**`fade` is allowed ONLY when the expert explicitly asks AND `blocksPerSlide: 1`** (fullscreen testimonial crossfade is the canonical use case). Never mix `fade` with `blocksPerSlide > 1`.
+
+**Pre-flight on every slider section:** if `transitionEffect` is missing, set it to `"slide"`. If it's `"fade"` and the expert never asked for fade, change to `"slide"`. Pair with §4.20, `mem://reference/slider-fade-stacks-slides.md`, and Pro slider minimum-blocks rule (`mem://reference/pro-slider-minimum-blocks.md`).
+
+---
+
+### 4.35aj 🚨 PRO FOOTER — ALWAYS set `merge_powered_by_with_copyright: "true"` (moves copyright + Powered By to a clean footer-bottom band)
+
+🚨 **Default for every Pro site (`base_theme` ending in `-pro`).** The `footer_pro` section schema exposes `merge_powered_by_with_copyright` (checkbox, default `"false"`). When `"true"`, Kajabi pulls the `copyright` block AND the "Powered by Kajabi" line OUT of the footer's main 12-column grid and renders them together in a dedicated **footer-bottom** div below the rest of the footer. This is the clean, modern look — copyright sits on its own row at the very bottom, visually separated from the link columns / brand wordmark / newsletter form above it.
+
+**The rule — every Pro site sets `merge_powered_by_with_copyright: "true"` on the `footer_pro` section's props by default**, unless the expert explicitly asks for the merged-into-grid layout. Emit as the literal string `"true"` (Kajabi schema enum), not boolean `true`.
+
+**Companion alignment fields — ALWAYS set when `merge_powered_by_with_copyright: "true"`:**
+- `merged_alignment_desktop` — `"left"` / `"center"` / `"right"` (default `"center"`)
+- `merged_alignment_mobile` — same (default `"center"`)
+
+Pick alignment to match the rest of the site's footer rhythm (centered for symmetric footers; left for editorial / left-aligned layouts).
+
+**Optional fields to use when the brand calls for it:**
+- `merged_text_color` — hex; defaults to footer text color. Set when the merged band needs a different tint (e.g. muted grey on a dark footer).
+- `merged_font_size_desktop` / `merged_font_size_mobile` — defaults `"18px"` / `"16px"`. Tighten to `"14px"` / `"13px"` for a subtler legal-line feel.
+- `merged_top_border` — `"true"` adds a hairline divider above the merged band. Use on busy footers to visually separate the legal row from the columns above.
+- `merged_top_border_color` — hex (default `"#333"`). Match to a brand-family muted line color.
+- `footer_bottom_padding_desktop` / `footer_bottom_padding_mobile` — 4-sided spacer objects (`{ top, right, bottom, left }`). Defaults `30/0/30/0` desktop, `0/0/20/0` mobile.
+
+**Canonical Pro footer props:**
+```jsonc
+{
+  "kind": "footer",
+  "slotId": "footer_pro",
+  "props": {
+    "merge_powered_by_with_copyright": "true",
+    "merged_alignment_desktop": "center",
+    "merged_alignment_mobile": "center"
+    // optional: merged_text_color, merged_font_size_*, merged_top_border, merged_top_border_color, footer_bottom_padding_*
+  },
+  "blocks": [ /* link_list, social_icons, copyright, etc. */ ]
+}
+```
+
+**Pre-flight check on every Pro site save:** confirm `footer_pro` props contain `merge_powered_by_with_copyright: "true"` + both `merged_alignment_*` fields. If missing, add them. Pair with §4.35aa (Standard `footer` hidden via `hide_on_desktop`/`hide_on_mobile`) — `footer_pro` is the canonical Pro footer and the merged-bottom band is its canonical layout.
+
+Standard themes (no `-pro` suffix) don't expose this field — rule does not apply.
+
+---
+
+### 4.35ak 🚨 `code_tabs` PANE SECTIONS — same background color as the tab container, tight padding between tabs and panes
+
+🚨 **Verified Pro Functionality site, 2026-05-09.** A Pro `code_tabs` block emits tab buttons; sibling `<ContentSection>`s with `useAsTab: true` + matching `tabSlug` values become the tab panes that swap content. The pattern only feels right when the tab container section AND every pane section are styled as **one continuous surface**.
+
+**Two rules — apply on EVERY `code_tabs` setup:**
+
+1. **Same `background` color on the tab container AND every pane section.** Mismatched colors (e.g. white container, cream pane) make tabs look disconnected from the content they control.
+2. **Tight padding between tabs and pane content.** Default full padding on both sides creates a huge dead-air gap. Compose:
+   - **Tab container:** normal top, **`bottom: "0"`** (e.g. `120/0` desktop, `80/0` mobile).
+   - **Each pane:** **tiny top** (`24` desktop / `16` mobile), normal bottom (e.g. `24/120` desktop, `16/80` mobile).
+
+```jsonc
+// Tab container
+{ "props": { "background": "#FFFFFF",
+    "paddingDesktop": { "top": "120", "right": "0", "bottom": "0", "left": "0" },
+    "paddingMobile":  { "top": "80",  "right": "0", "bottom": "0", "left": "0" } },
+  "blocks": [ { "type": "code_tabs", "props": { "tabs": [...] } } ] }
+// Pane (one per tab; exactly ONE has defaultTab:true)
+{ "props": { "useAsTab": true, "tabSlug": "standard", "defaultTab": true,
+    "background": "#FFFFFF",
+    "paddingDesktop": { "top": "24", "right": "0", "bottom": "120", "left": "0" },
+    "paddingMobile":  { "top": "16", "right": "0", "bottom": "80",  "left": "0" } },
+  "blocks": [ /* pane content */ ] }
+```
+
+**Pre-flight on every `code_tabs` save:** container + every `useAsTab` sibling share `background`; container has `bottom: "0"` padding; panes have small `top`; exactly one pane has `defaultTab: true`; every `tabSlug` matches a tab `slug`. See `mem://reference/code-tabs-pane-sections.md`.
+
+---
+
+### 4.35al 🚨 BUTTON CONTRAST — every button MUST visually pop against its section background (NEVER blend in)
+
+🚨 **REPEAT OFFENDER — the expert has flagged this multiple times across multiple sites. Do NOT let it happen again.** The trap: AI sets `buttonBackgroundColor` (or `btn_background_color`, or relies on sitewide `themeSettings.color_button`) to a value that equals — or is visually indistinguishable from — the section's `background`. Result: the button silhouette disappears into the section, only the label text floats in mid-air, and the CTA looks broken/unfinished. Common failure shapes:
+
+1. **Section bg `#082023` (dark) + button bg `#082023` or unset (form blocks fall back to themeSettings dark)** → button vanishes, only label visible.
+2. **Section bg `#FFFFFF` (white) + button bg `#FFFFFF` or `transparent`** → same problem on light sections.
+3. **Section bg `#F4EFE6` (cream) + button bg `#F1EAD9` (sand)** → too-close neighbors (ΔL < 8) read as a single tone — fails contrast even though the hex values differ.
+4. **Form blocks specifically** — Pro/Standard form Liquid renders the submit button via the **sitewide form-button themeSettings**, NOT the per-block `btn_background_color`. So setting `buttonBackgroundColor: "#C9A96A"` on a `form` block on a dark section can STILL render dark-on-dark if `themeSettings.form_input_button_*` (or the cascading `color_button`) is dark and the section bg matches. Always verify form button contrast against the LIVE rendered preview, not the per-block prop.
+5. **Old-palette-leftover sections** — when a site is restyled (dark → light, or vice versa), one section's `background` gets missed in the bulk update and keeps its old color. The buttons inside still target the new palette. Result: button bg matches what the section USED to be, blends into what it IS now.
+
+**The rule — every button-bearing block (`cta`, `feature`/`pricing_card`/`card` with `showButton:true`, `form` submit), every time:**
+
+1. **Compute the contrast.** Compare the BUTTON's effective background (per-block `buttonBackgroundColor` → falls back to sitewide `themeSettings.color_button` / `form_input_button_background_color`) against the SECTION's `background` (or, if the block has its own `backgroundColor`, against THAT). The two must be visually distinct — different hue OR substantially different luminance (rule of thumb: difference in HSL lightness ≥ 25, or one is dark + one is light).
+2. **`buttonStyle: "solid"`** → button bg MUST contrast with section bg. If they match, change one (usually swap to a brand accent that stands apart from the section).
+3. **`buttonStyle: "outline"` / `"text"`** → the BORDER color (outline) or TEXT color (text-style, per §4.16) MUST contrast with section bg. A gold outline button on a cream section is just as broken as a gold solid button on a gold section.
+4. **Form blocks** — set BOTH per-block AND sitewide. Per-block via `buttonBackgroundColor` + `btn_background_color` (dual-shape per §4.29). Sitewide via `themeSettings.form_input_button_background_color` (Pro) / `themeSettings.color_button` (Standard fallback). On dark form sections, ALSO set `themeSettings.form_input_button_text_color` to a light value. NEVER assume per-block button props on a `form` will win — they often don't.
+5. **Cross-check on EVERY section restyle.** When you change a section's `background` color (palette swap, dark→light pass, "make this section pop"), IMMEDIATELY audit every button in that section for the new contrast. The button you didn't touch is now the bug.
+
+**Pre-flight check on EVERY save that touches a button OR a section background:**
+
+```
+For every section S in the design:
+  sec_bg = S.props.background (or fallback to themeSettings.background)
+  For every block B in S.blocks:
+    if B is cta OR (feature/pricing_card/card with showButton) OR form:
+      btn_bg = B.props.buttonBackgroundColor || themeSettings.color_button (or form_*)
+      btn_text = B.props.buttonTextColor || themeSettings.color_button_text
+      effective_bg = B.props.backgroundColor || sec_bg
+
+      if normalize(btn_bg) == normalize(effective_bg):
+        🚨 BLEND — button vanishes. Fix.
+      if hsl_lightness_delta(btn_bg, effective_bg) < 25 AND same_hue_family(btn_bg, effective_bg):
+        🚨 LOW CONTRAST — button reads as a tonal smear. Fix.
+      if buttonStyle == "outline":
+        check border color (= btn_bg by default) vs effective_bg → same checks
+      if buttonStyle == "text":
+        check text color (= btn_bg if dark per §4.16, btn_text if light) vs effective_bg
+```
+
+**Symptom mapping → check button contrast FIRST:**
+- "the button blends into the section" / "I can only see the text, not the button" / "where did the button go?"
+- "the form submit looks broken — just floating words"
+- "the CTA disappeared after we changed the section color"
+- "this section's button looks invisible vs the rest of the site"
+
+**Companion to:** §4.7 (sitewide CTA brand consistency — solves "every button matches each other"), §4.16 (text-button color quirk — solves "color comes from the wrong slot"), §4.23 (white-on-white BLOCK contrast — solves the chrome-bearing-block version of this same blend bug). This rule (§4.35al) covers the BUTTON-vs-SECTION axis specifically.
+
+**The mnemonic:** **a button you can't see isn't a button.** Every time you author or edit a button, OR change a section's background, run the contrast check. No exceptions. If the expert has to point this out, you've already failed the pre-flight.
+
+See `mem://reference/button-contrast-vs-section.md`.
+
+---
+
+### 4.35am 🚨 PRO THEMES USE DIFFERENT STYLE-GUIDE FIELD IDS THAN STANDARD — `color_button` ≠ `btn_background_color` (silent-drop trap, Pro-specific)
+
+🚨 **Verified failure mode (Carrie Variation site, 2026-05-10).** On Pro themes (`base_theme` ending in `-pro`), the **Standard** Kajabi field IDs `color_button` / `color_button_text` (and a few others) **DO NOT EXIST in the Pro template settings schema**. Pro uses different field IDs for the same UI controls. Authoring `color_button: "#B5826B"` on a Pro site sits valid in JSON, save returns 200, the live site picks it up via inheritance for SOME elements — but the **Pro Style Guide UI** reads `btn_background_color`, sees nothing, and renders the engine's brand-orange fallback (`#ff3e14`) in the swatch. The expert opens the Style Guide and says "why are my button colors orange?" — because the field name they're looking at was never written.
+
+**Special case of §4.26a (never invent schema field IDs), inverted.** §4.26a covers fields that don't exist anywhere. THIS rule covers fields that ARE real on Standard but DON'T EXIST on Pro (or vice versa). Both bug-shapes are silent-drops; both are caught by reading `schemas.generated.json` for the actual `base_theme` BEFORE writing.
+
+**Verified Pro vs Standard field mapping (streamlined-home-pro / encore-page-pro):**
+
+| What it controls | Standard field ID (themes WITHOUT `-pro`) | Pro field ID (themes WITH `-pro`) |
+|---|---|---|
+| Sitewide button bg (dark slot) | `color_button` | `btn_background_color` |
+| Sitewide button text (light slot) | `color_button_text` | `btn_text_color` |
+| Page bg | `color_background` | `background_color` |
+| Body copy color | `color_text` | `color_body` |
+| Heading color | (no dedicated field) | `color_heading` |
+| Secondary body color | — | `color_body_secondary` |
+
+The Standard fields ALSO get read by some Pro Liquid paths via inheritance (so the live site mostly looks right) — but the **Pro Style Guide editor UI is bound to the Pro field IDs only**. Setting only the Standard names = right rendering, broken Style Guide = expert confusion.
+
+**The rule — every Pro site themeSettings write MUST set BOTH the Pro field AND, for safety, the Standard sibling:**
+
+```jsonc
+{
+  "themeSettings": {
+    // Pro field IDs (REQUIRED for the Style Guide UI)
+    "btn_background_color": "#B5826B",
+    "btn_text_color": "#FBF7F0",
+    "background_color": "#FBF7F0",
+    "color_heading": "#2A2722",
+    "color_body": "#2A2722",
+    "color_body_secondary": "#5C534A",
+
+    // Standard siblings (kept for inheritance / Liquid fallbacks)
+    "color_button": "#B5826B",
+    "color_button_text": "#FBF7F0",
+    "color_background": "#FBF7F0",
+    "color_text": "#2A2722"
+  }
+}
+```
+
+**Pre-flight on every Pro site themeSettings save:**
+1. Confirm `base_theme` ends in `-pro`. If yes, the Pro field IDs above are MANDATORY.
+2. For every Pro field ID, verify it appears in `packages/engine/src/engines/schemas.generated.json` under `themes['<base_theme>'].templateSettings` — never trust this rule's table without re-checking when authoring a NEW field.
+3. Open the Style Guide UI in the editor preview after save. If any color swatch shows the orange brand fallback (`#ff3e14`) when you set the value, the field ID you wrote was wrong — find the right Pro ID in the schema.
+
+**Symptom mapping → check Pro vs Standard field IDs FIRST:**
+- "Style Guide shows orange/red brand colors but I set themeSettings to brand"
+- "Saved color_button to navy, the Style Guide swatch is still red"
+- "Live site looks right but the editor Style Guide doesn't reflect my brand"
+- "Per-block button colors work but the global button color in Style Guide is empty"
+
+**Same rule applies to fonts.** §4.35ad already mandates Pro custom fonts via `use_custom_fonts:"true"` + `font_stylesheet_links` + `select_custom_all_headings_font:"primary"` (Pro field IDs). NEVER reach for `customCss` `@import url(fonts.googleapis...)` + `body{font-family:...}` to set fonts on a Pro site — Pro custom fonts give you the actual Style Guide experience the expert paid for. If themeSettings already configures Pro fonts, **do not duplicate the same fonts in customCss** — duplicated rules are a no-op at best and silently override Style Guide tweaks at worst.
+
+**The mnemonic:** **Pro themes have their own Style Guide schema. The Standard field IDs are NOT a superset of Pro's — they're a different set with overlapping behavior.** Always grep `schemas.generated.json` for the actual `base_theme` before writing themeSettings, especially color/button/background fields.
+
+---
+
+### 4.35an 🚨 SHARED HEADER AND SHARED FOOTER MUST BE BRANDED BEFORE DECLARING A SITE DONE (the #1 missed step on new builds)
+
+🚨 **Verified failure mode (Verdant Carrie variation, 2026-05-11).** AI built 12 fully-branded pages — homepage hero, programs, testimonials, about, footer pages — set typography in `themeSettings`, generated all imagery, wired every CTA. THEN told the expert it was done. The expert opened the site and immediately spotted the bug: **the header still said "Encore" (base-theme placeholder) and the footer was still default rows.** The shared header/footer were NEVER touched during the build.
+
+**Why this happens:** §4.35ac auto-seeds every Kajabi system page from the base theme zip on `createSite`. That seed includes `sharedHeader` and `sharedFooter` (or `sharedFooterPro` on Pro themes) populated with the BASE THEME's defaults — generic "Encore" / "Streamlined" wordmark, placeholder nav, default link columns. Those slots persist across every page on the site. The AI then walks each page composing content sections, mentally treats "the site" as just the pages, and forgets that header + footer are first-class authoring surfaces too.
+
+**The rule — `sharedHeader` AND `sharedFooter` (or `sharedFooterPro` on Pro themes) MUST be branded as part of every new site build, BEFORE declaring done.** Not a nice-to-have, not a polish pass — it is part of the core composition work. Same priority as composing the homepage hero.
+
+**What "branded" means concretely:**
+
+**`sharedHeader` (every site):**
+1. Real brand wordmark or logo — `logo` block (`logoType: "text"` with brand name + `logoTextFontFamily`/`logoTextFontWeight`/`logoTextLetterSpacing`/`logoTextColor` matching the site's brand AND a matching `.logo__text` rule in `customCss` per §4.35f; OR `logoType: "image"` pointing at a real uploaded logo URL).
+2. Real navigation `menu` block — actual page links matching the site's `pageKeys`, not "Home / Features / Pricing" placeholders.
+3. CTA button (`cta` block) if the site has a primary conversion action — matching sitewide button styling per §4.7.
+4. Header `background` color matches the brand (cream, dark, white — whatever the design language calls for, NOT base-theme default).
+5. NEVER leaves a `text` block in the header for a wordmark (silently dropped per §4.27).
+
+**`sharedFooter` / `sharedFooterPro` (every site):**
+1. Brand wordmark/logo line — for Pro themes, use a `text` block with inline-styled wordmark HTML (per §4.35e — `footer_pro` has NO `logo` block); for Standard themes, use a `logo` block.
+2. Real `link_list` columns — actual page links + resources, NOT base-theme "Quick Links / Support / Legal" placeholders. Per §4.5, omit `title` on each `link_list` unless brand explicitly asks for column headings.
+3. `social_icons` block IF the site has social presence — real URLs only (`mem://index.md`: only platforms with URLs set will render).
+4. `copyright` block — text starts with the brand name only, NO leading `©`/year per §4.13.
+5. Footer `background` matches brand (often inverts the site palette — dark footer on a light-mode site, or cream on a dark-mode site).
+6. On Pro sites: `merge_powered_by_with_copyright: "true"` + alignment fields per §4.35aj.
+7. On Pro sites: the Standard `sharedFooter` slot is hidden via `hide_on_desktop:"true"` + `hide_on_mobile:"true"` per §4.35aa.
+
+**Pre-flight check on EVERY new site build, EVERY major redesign, BEFORE telling the expert "done":**
+
+1. Open `design.sharedHeader` (or the header section on `design.pages.index.sections[0]`). Walk the blocks. Is there a `logo` block? Is its `logoText`/`logo` the actual brand name/asset, NOT "Encore" / "Streamlined" / "Your Brand"? Is the `menu` populated with real page links? Is the header `background` matching the brand?
+2. Open `design.sharedFooter` and (on Pro) `design.sharedFooterPro`. Walk the blocks. Is the brand wordmark present? Are the link_list columns real? Is the `copyright` block branded?
+3. If ANY answer is no → STOP. Brand the header/footer BEFORE declaring done. This is not a "save and the expert will let me know" situation — it is a guaranteed bug report.
+
+**Symptom mapping (any of these = §4.35an was violated):**
+- "the header still says Encore / Streamlined / base theme name"
+- "the footer is just default rows / placeholder links"
+- "header and footer are just the default... not customized"
+- "the header doesn't match the rest of the site"
+- "did you forget to brand the header?"
+
+**The mnemonic:** **a site isn't done when the pages are branded — it's done when the SHARED CHROME (header + footer) is branded too.** Header and footer are not "later"; they are part of every site build by default. Add to §4.35ae checklist items #6 and #7.
+
+See `mem://reference/shared-header-footer-must-be-branded.md`.
+
+---
+
+### 4.35ao 🚨 GENERATED PERSON/FIGURE IMAGES MUST BE VISUALLY INSPECTED FOR ANATOMY DEFECTS BEFORE WIRING
+
+🚨 **Verified failure mode (Verdant Carrie variation, 2026-05-11).** AI generated 12 figure/person images via `imagegen` (hero, lifestyle, intro, offer, optin, closing, bio, etc.), uploaded them all in one batch, wired them into the site, declared done. The expert opened the site and immediately spotted **broken anatomy in 3 of the 12** — deformed chest/arms in the hero, warped hands in `offer1`, distorted posture in `lifestyle1`. None of these were caught during the build because the AI never LOOKED at the images after generating them.
+
+**Why this happens:** image generation models (gpt-image-2, gemini, etc.) are statistically reliable but unreliable on figures/limbs/hands — verified failure rate roughly 1 in 4 person images has at least one visible anatomy defect (extra finger, fused limb, twisted torso, asymmetric face, distorted hand). Treating image generation as "fire and forget" guarantees ~25% of person images on a finished site are broken.
+
+**The rule — every generated image depicting a HUMAN FIGURE must be visually inspected BEFORE being wired into the site (before the `upload-site-image` call OR immediately after, before referencing in `design`).**
+
+**What to inspect (the failure surfaces):**
+1. **Hands** — count fingers, check that wrists connect naturally to arms. Hands are the #1 source of obvious defects.
+2. **Limbs** — arms and legs symmetric, joints in correct places, no fusion between body parts, no third arm/leg.
+3. **Torso** — chest, shoulders, hips proportioned naturally; no warped/elongated/compressed sections.
+4. **Faces** — eyes symmetric, ears matching, no doubled features. Faces in profile are less risky than 3/4 angles.
+5. **Posture** — pose makes physical sense; no impossible joint bends or "leaning into nothing."
+
+**How to inspect — TWO ALLOWED METHODS, NOT BOTH:**
+
+**Method A (preferred for batches of 5+):** After generating images to `.tmp-images/`, run a quick visual scan by listing each via `code--view` (which renders images inline). One pass through the batch — flag any image with anatomy concerns.
+
+**Method B (single hero/portrait image, max scrutiny):** Use `code--view` on the single image and explicitly reason about each anatomy checkpoint above before approval.
+
+**If a defect is found:**
+1. Regenerate the offending image with a sharpened prompt (add "natural anatomy, correct number of fingers, symmetric posture" if vague; or reframe the shot to crop out the problematic limb — e.g. portrait-only crop, hands-out-of-frame, profile angle).
+2. Re-inspect the new version.
+3. Only upload + wire after inspection passes.
+
+**When this rule does NOT apply:** images with no people (landscapes, architecture, product shots, abstract textures, food, plants). Anatomy QA is specifically for figure imagery.
+
+**Pre-flight check at end of every site build that generated person images:** before declaring done, confirm every wired person image has been visually inspected. If any image was generated and wired without inspection, do the inspection NOW and regenerate any defective ones before telling the expert it's done. **Letting the expert be the first set of human eyes on a generated person image is a process bug, not a content bug.**
+
+**Why this isn't just "be more careful":** the model failure rate is genuinely ~25% on figures; no amount of prompt engineering eliminates it. The ONLY reliable mitigation is human (AI) review of every figure image before shipping. Skipping inspection means ~1 in 4 person images on the finished site has a visible defect — that's a guaranteed expert complaint, every time.
+
+See `mem://reference/person-image-anatomy-qa.md`.
+
+---
+
+### 4.36 ➕➖ ADDING and REMOVING pages on a multi-page site (`kind: 'site'`)
+
+This is a routine operation and a frequent expert ask. Two arrays in `design` MUST stay in sync:
+
+- `design.pageKeys: string[]` — the ordered list (drives the editor's page picker order)
+- `design.pages: { [key]: { sections: [...] } }` — the actual page contents
+
+**Page-key naming rules:**
+- snake_case only: `[a-z0-9_]+` (hyphens are auto-sanitized to underscores at export time but author them in snake_case from the start — see `mem://reference/template-name-handle-snake-case.md`).
+- Must NOT collide with Kajabi system page keys unless you intend to override them: `index`, `about`, `page`, `contact`, `blog`, `blog_post`, `thank_you`, `404`, `library`, `store`, `login`, `register`, `forgot_password`, `reset_password`, `newsletter*`, `member_directory`, `announcements`, `blog_search`.
+- Custom pages (e.g. `services`, `level_1_foundation`, `mastermind`) become Kajabi templates `templates/<key>.liquid` at export.
+
+**Adding a page** (e.g. `services`):
+1. GET the design.
+2. `design.pages.services = { sections: [headerSection, ...contentSections, footerSection] }` — reuse the SAME header/footer references as other pages (they're shared site-wide; last-defined wins on export).
+3. `design.pageKeys.push('services')` (or splice in at a specific index for ordering).
+4. POST the full design back.
+5. Tell the expert the page is now live at `/sites/<id>/editor?page=services` in the editor; on export it lands at `templates/services.liquid` with the matching `content_for_services` block in `settings_data.json`.
+
+**Removing a page** (e.g. `about`):
+1. **Refuse to delete Kajabi system pages.** Per project memory: NEVER delete `index`, `blog`, `blog_post`, `library`, `login`, `register`, `forgot_password`, `reset_password`, `thank_you`, `404`, `newsletter*`, `member_directory`, `announcements`, `blog_search`, `store`. These are required by Kajabi's runtime — removing them breaks the export. Only non-system pages (`about`, `contact`, custom-added) and pages the expert explicitly added are safe to remove.
+2. GET the design.
+3. `delete design.pages.about`
+4. `design.pageKeys = design.pageKeys.filter(k => k !== 'about')`
+5. POST the full design back.
+
+**Reordering pages:** mutate `design.pageKeys` to the new order; leave `design.pages` untouched.
+
+**Renaming a page key:** copy `design.pages[oldKey]` to `design.pages[newKey]`, delete the old, replace the entry in `pageKeys`. Tell the expert any external links to the old URL will need updating in Kajabi.
+
+**Pre-flight check before saving:** every key in `pageKeys` MUST exist in `pages` and vice versa. Mismatches break the editor's page picker and may break export.
+
+For landing pages (`kind: 'landing_page'`): there is only `index`. Do NOT add or remove pages — landing pages collapse to a single page by definition. If the expert wants multiple pages, they need a `kind: 'site'` site instead.
+
+---
+
 ## 5. How to talk to the expert
 
 
@@ -926,310 +2304,105 @@ If it's shared platform → pause and tell the operator.
 
 ---
 
-## 8. Syncing engine fixes from master (operator-triggered)
+## 8. Thin client architecture & sync (operator-triggered)
 
-> **🚨 ARCHITECTURE — READ THIS FIRST.** As of engine `0.1.16+`, almost all rendering, preview, export, and block code lives in the **`@k-studio-pro/engine` npm package** (source on master at `packages/engine/`, published to npm via GitHub Actions on every `packages/engine/package.json` version bump). Thin clients are supposed to be **truly thin shells** that import from the package and pick up fixes via `bun update @k-studio-pro/engine`. The file-by-file sync workflows in §8.1–§8.9 are **legacy**, kept only for thin clients that haven't been migrated yet. **Always check §8.0 first** — if the thin client still has local `src/blocks/`, `src/engines/`, or `src/lib/siteDesign/` directories, run the §8.0 migration ONCE; from that point on, every fix flows automatically through `bun update`.
+> **🚨 CANONICAL ARCHITECTURE (2026-04-30+):** Every thin client is a **5-line iframe** of `https://app.kajabi-studio.com/`. The expert signs into master through the iframe and edits sites against master's database (RLS-scoped to their `auth.uid()`). The engine, base themes, dashboard, editor, preview pipeline — all of it lives on master and is rendered inside the iframe. Engine fixes propagate **the instant master deploys**; there is no `bun update`, no file copy, no sync ritual. The legacy "engine npm package + thin shell" model (§8.1–§8.9 in older versions of this file) is dead.
 
-### 8.‑1 ⭐ THE ONE-PHRASE FULL SYNC: `sync everything from master`
+The canonical iframe template lives at `thin-client-templates/iframe-app/`. It contains:
 
-🚨 **This is the operator's go-to sync.** When you (the thin-client AI) see any of these literal phrases:
-
-- **"sync everything from master"**
-- **"full sync from master"**
-- **"sync it all"**
-- **"sync all the things"**
-- **"resync everything"**
-
-…run the entire bundle below in ONE pass, with all reads batched in parallel for speed. This is the explicit operator override of §4.2 and replaces every other sync trigger combined. Do not ask "are you sure" — just do it.
-
-#### Files to sync (in parallel — batch every read in ONE tool call where possible)
-
-**1. Engine wiring (sync from `thin-client-templates/` — NEVER from master's own copy):**
-- `thin-client-templates/vite.config.ts` → write to `vite.config.ts`
-- `thin-client-templates/tsconfig.app.json` → write to `tsconfig.app.json`
-- `thin-client-templates/package.json` → write to `package.json`
-- `thin-client-templates/tailwind.config.ts` → write to `tailwind.config.ts`
-- `tsconfig.json` — sync from master's root copy verbatim (no thin-client divergence)
-
-🚨 **Why these 4 use `thin-client-templates/` instead of master's root copies:** master's own `vite.config.ts` / `tsconfig.app.json` / `package.json` / `tailwind.config.ts` reference `./packages/engine/src/` (the local monorepo source). Copying them verbatim into a thin client breaks the build (or, in tailwind's case, silently strips every engine-shell utility class because the engine source lives at a different path on thin clients). The `thin-client-templates/` versions are byte-for-byte what a thin client needs: aliases pointing at `node_modules/@k-studio-pro/engine`, package.json depending on the published `@k-studio-pro/engine` package, `vite.config.ts` using the `viteEngineAliases()` helper from the engine package itself, and `tailwind.config.ts` whose `content` array includes `./node_modules/@k-studio-pro/engine/src/**/*.{js,ts,jsx,tsx}` so Tailwind compiles the shell/dashboard/editor classes that now live inside the engine package. Sync them VERBATIM with no skip/rewrite logic — that's the entire point of the templates directory existing.
-
-🚨 **Post-migration check — broken dashboard/editor styling = Tailwind isn't scanning the engine.** After migrating to `@k-studio-pro/engine@0.3.0+`, if the dashboard, site editor, AppHeader, or any vendored shadcn primitive (Button, Card, Dialog, etc.) renders unstyled or with missing layout — buttons look like raw `<button>` text, cards have no border/shadow, the dashboard collapses to a single column — the cause is almost always that `tailwind.config.ts` was NOT synced from `thin-client-templates/` and is missing the `./node_modules/@k-studio-pro/engine/src/**/*.{js,ts,jsx,tsx}` glob. Verify by `grep "@k-studio-pro/engine" tailwind.config.ts` (must match) and hard-refresh the preview after re-syncing the file. The engine code itself is fine; Tailwind just isn't generating the classes those components reference.
-
-🚨 **Post-migration check — Pro slider stuck at 1-up / cards stacking vertically = missing Swiper CSS.** Engine v0.3.1 confirms the Pro slider renders correctly when the host app loads Swiper's stylesheet. The engine's `renderSlider` (in `packages/engine/src/blocks/sections.tsx`) imports Swiper from `swiper/react` but does NOT bundle Swiper's CSS — that's the host app's job. Without it, `.swiper-wrapper` has no `display: flex` and `.swiper-slide` has no `flex-shrink: 0`, so every slide stacks vertically at the section's full width and the slider looks broken even though Swiper's JS is wired up correctly.
-
-**Required `src/main.tsx` shape** (sync from `thin-client-templates/main.tsx` — the imports must come BEFORE `./index.css` so design tokens still win the cascade):
-
-```ts
-import "swiper/css";
-import "swiper/css/navigation";
-import "swiper/css/pagination";
-import "swiper/css/effect-fade";
-import "swiper/css/effect-cube";
-import "swiper/css/effect-coverflow";
-import "swiper/css/effect-flip";
-import "./index.css";
+```
+thin-client-templates/iframe-app/
+├── App.tsx                  ← 5-line <iframe src="https://app.kajabi-studio.com/" />
+├── main.tsx
+├── index.html
+├── index.css
+├── vite.config.ts
+├── package.json             ← deps = react + react-dom only
+├── AGENTS.md                ← thin-client AI's "read this first" file
+├── README.md
+├── knowledge/
+│   └── README.md            ← placeholder; sync script populates the rest
+└── scripts/
+    └── sync-knowledge.ts    ← Deno script that pulls the knowledge bundle
 ```
 
-**DOM verification (open DevTools on a page that uses the slider):**
-- `.swiper-wrapper` → computed `display: flex` ✅
-- `.swiper-slide` → computed `flex-shrink: 0` ✅
+### 8.1 Operator trigger: `convert to iframe`
 
-If either is missing/`block`/`1`, Swiper CSS isn't loading — check the imports above and that `swiper` is installed (`ls node_modules/swiper/package.json`). Pin the engine to exactly `"@k-studio-pro/engine": "0.3.1"` (or higher) for the verified Pro slider rendering, then run `bun update @k-studio-pro/engine && rm -rf node_modules/.vite` and hard-refresh the preview. Clearing `node_modules/.vite` is REQUIRED after any engine update — Vite's dep-pre-bundle cache otherwise serves the previous engine version's pre-bundled chunks even though `node_modules/@k-studio-pro/engine` is up to date, which manifests as "I bumped the engine but the slider still stacks."
+When the operator types **`convert to iframe`** (or `migrate to iframe shell`) in a thin client project, execute this immediately — no clarifying questions:
 
-🚨 **Post-migration check — `"useAuth must be used within an AuthProvider"` = engine shell module fragmentation.** This error fires even when the route tree IS wrapped in `<AuthProvider>`. Root cause: Vite's dep optimizer split the engine shell into two chunks, each carrying its own React context instance, so the `AuthContext` written by `<AuthProvider>` is invisible to the `useAuth()` call inside `<RequireAuth>`. Three things must all be true to prevent this:
+```bash
+# 1. Nuke the old shell + engine wiring
+rm -rf src node_modules public/base-theme supabase scripts packages \
+       eslint.config.js tsconfig.app.json tsconfig.node.json \
+       AGENTS.md PRO_CAPABILITIES.md README.md \
+       tailwind.config.ts postcss.config.js components.json
+```
 
-1. **Single import subpath in App.tsx.** Both `AuthProvider` and `RequireAuth` MUST be imported from the SAME engine entry — always `@k-studio-pro/engine/shell`:
+Then copy the **whole** `thin-client-templates/iframe-app/` directory into the project root — every file, including the easy-to-miss `AGENTS.md`, `scripts/sync-knowledge.ts`, and `knowledge/README.md`. Without those three, the thin-client AI refuses site-editing requests with "no knowledge folder, I'm just an iframe shell."
 
-   ```ts
-   // ✅ Correct — single canonical entry
-   import { AuthProvider, RequireAuth } from "@k-studio-pro/engine/shell";
+Then `bun install` and run the knowledge sync once:
 
-   // ❌ Wrong — different paths fragment the module graph
-   import { AuthProvider } from "@k-studio-pro/engine/shell";
-   import { RequireAuth } from "@/components/RequireAuth";
-   ```
+```bash
+deno run --allow-read --allow-write --allow-net --allow-env scripts/sync-knowledge.ts
+```
 
-   Do NOT import `RequireAuth` or `useAuth` from `@/components/RequireAuth` / `@/hooks/useAuth` inside App.tsx — those local files are 1-line shims, but mixing them with a direct engine import is what creates the second chunk. The shims themselves should also re-export from `@k-studio-pro/engine/shell` (see `thin-client-templates/src-shell-shim.ts`) so any other file that uses them stays on the same module instance.
+The expert's sites/data are unaffected — they live in master's database, tied to the expert's `auth.uid()`.
 
-2. **Route tree shape.** The provider must wrap `<Routes>`:
+### 8.2 How the knowledge bundle works
 
-   ```tsx
-   <BrowserRouter>
-     <AuthProvider>
-       <Routes>...</Routes>
-     </AuthProvider>
-   </BrowserRouter>
-   ```
+Master's `publish-knowledge-bundle` edge function (admin-only, gated on `THIN_CLIENT_APP_TOKEN`) packages every file the thin-client AI needs (this `AGENTS.md`, `PRO_CAPABILITIES.md`, `src/engines/kajabi_rendering_guide.md`, every relevant `mem://reference/*.md`) into a deterministically-hashed zip in the `knowledge-bundle` storage bucket and records the version in `knowledge_bundle_versions` (current row marked `is_current = true`).
 
-3. **Vite config has React + Router pre-bundled and deduped.** `thin-client-templates/vite.config.ts` MUST contain:
+Thin clients call `get-knowledge-bundle-version` on every chat-start, compare the returned hash to their local `knowledge/.bundle-hash`, and download+unpack the new zip if it differs (no-op otherwise). Same hash = same bytes = idempotent — safe to publish on every master AGENTS edit.
 
-   ```ts
-   resolve: {
-     dedupe: [
-       "react", "react-dom",
-       "react/jsx-runtime", "react/jsx-dev-runtime",
-       "react-router-dom",
-       "@tanstack/react-query", "@tanstack/query-core",
-       "swiper",
-       "@k-studio-pro/engine",   // ← engine itself must be single-instance
-     ],
-   },
-   optimizeDeps: {
-     include: [
-       "react",
-       "react/jsx-runtime",
-       "react-dom",
-       "react-dom/client",
-       "react-router-dom",
-     ],
-   },
-   ```
+**Operator publish flow** — after editing `AGENTS.md` / `PRO_CAPABILITIES.md` / any `mem://reference/*.md` on master, run the publisher script (see `mem://reference/knowledge-bundle-publish-procedure.md` for the exact one-shot Deno script). It reads the relevant files locally and POSTs them as `{ files: [{ path, content }] }` to `publish-knowledge-bundle` with the `x-admin-secret` header set to `THIN_CLIENT_APP_TOKEN`. Within a few seconds every thin client picks up the new bundle on its next chat.
 
-   Do NOT add `@k-studio-pro/engine`, `@k-studio-pro/engine/shell`, or `@k-studio-pro/engine/data` to `optimizeDeps.exclude` unless you have a proven reason — excluding them brings the fragmentation back.
+### 8.3 Operator trigger: `sync knowledge` (rare)
 
-**Recovery procedure when the error appears in a thin client:**
-   1. Open `src/App.tsx`. Confirm `AuthProvider` and `RequireAuth` are imported from `@k-studio-pro/engine/shell` (same line, same path). Fix if not.
-   2. Open `vite.config.ts`. Confirm `dedupe` and `optimizeDeps.include` match the block above. Re-sync from `thin-client-templates/vite.config.ts` if not.
-   3. `rm -rf node_modules/.vite`
-   4. Restart the dev server and hard-refresh the browser.
+If the operator pastes `sync knowledge` in a thin client, run the sync script manually:
 
-Failure signature for memory:
-> Error: `useAuth must be used within an AuthProvider`
-> Likely causes: AuthProvider and RequireAuth imported from different module paths; Vite fragmented the engine shell/auth module; stale `node_modules/.vite` cache.
-> Fix: import both from `@k-studio-pro/engine/shell`; confirm Vite `optimizeDeps`/`dedupe` settings; clear `node_modules/.vite`.
+```bash
+deno run --allow-read --allow-write --allow-net --allow-env scripts/sync-knowledge.ts
+```
 
-**2. Documentation (so the thin client AI follows the latest rules):**
-- `AGENTS.md` — this file
-- `PRO_CAPABILITIES.md` — full Pro reference
+This is rarely needed because thin-client AIs run it automatically on chat-start. Useful only if the operator just published a new bundle and wants to confirm the thin client picked it up before testing.
 
-**3. App shell + chrome (engine v0.3.0+ — most files are now 1-line re-export shims):**
+### 8.4 What an iframe thin client CANNOT do (and shouldn't try)
 
-🚨 **As of engine v0.3.0, the entire shell lives in the engine package.** AppHeader, SitesDashboard, SiteEditor, LandingPagesDashboard, Index, NotFound, RequireAuth, NavLink, AppHeader, useAuth, and the vendored shadcn primitives are all `export { ... } from '@k-studio-pro/engine'`. Visual updates flow through `bun update @k-studio-pro/engine` — no file copy needed.
+- Render previews locally — the editor preview lives on master, served through the iframe.
+- Execute the export pipeline locally — `update-site-design` saves JSON to master's DB; the export runs on master when the expert clicks Export.
+- Read/write the `sites` table directly — no Supabase client, no anon key. Always use `get-site-design` / `update-site-design` / `upload-site-image` over HTTPS with `X-App-Token`.
+- Cache anything site-related locally — there is no client-side store.
 
-Files to overwrite from master verbatim (these are the shims + project-only files):
-- `src/components/AppHeader.tsx` — 1-line shim → `export { AppHeader } from '@k-studio-pro/engine/shell';`
-- `src/components/RequireAuth.tsx` — 1-line shim → `export { RequireAuth } from '@k-studio-pro/engine/shell';`
-- `src/components/NavLink.tsx` — 1-line shim → `export { NavLink } from '@k-studio-pro/engine/shell';`
-- `src/components/SitePreview.tsx` — 1-line shim (already established in 0.1.x)
-- `src/hooks/useAuth.tsx` — 1-line shim → `export { AuthProvider, useAuth } from '@k-studio-pro/engine/shell';`
-- `src/pages/SitesDashboard.tsx` — 1-line shim → `export { SitesDashboard as default } from '@k-studio-pro/engine/shell';`
-- `src/pages/SiteEditor.tsx` — 1-line shim
-- `src/pages/LandingPagesDashboard.tsx` — 1-line shim
-- `src/pages/Index.tsx` — 1-line shim
-- `src/pages/NotFound.tsx` — 1-line shim
-- `src/App.tsx` — STAYS as a real file (composes engine pages with project-specific Auth/Admin/ResetPassword routes); **sync from `thin-client-templates/App.tsx`** (NOT from master's own `src/App.tsx`) — the template enforces the single-subpath import rule (`AuthProvider` and `RequireAuth` both from `@k-studio-pro/engine/shell`) that prevents the "useAuth must be used within an AuthProvider" fragmentation bug
+### 8.5 Legacy: engine-package thin clients (deprecated, being phased out)
 
-🚨 **All shell shims MUST re-export from `@k-studio-pro/engine/shell` (the subpath), NOT `@k-studio-pro/engine` (the root barrel).** Both paths re-export the same symbols, but consistency across every shim + App.tsx is what keeps Vite resolving `AuthProvider` / `useAuth` / `RequireAuth` to a single module instance. Mixing the two paths is the #1 trigger of the "useAuth must be used within an AuthProvider" error after migration. See the post-migration check above.
-- `src/index.css`
-- `index.html`
+A small number of older thin clients still ship local `src/blocks/`, `src/engines/`, and depend on the `@k-studio-pro/engine` npm package directly (instead of iframing master). Detection:
 
-(Note: `tailwind.config.ts` is in list 1 above — synced from `thin-client-templates/`, NOT from master's root copy. Master's tailwind config doesn't include the `node_modules/@k-studio-pro/engine` content glob because the engine source lives in `./packages/engine/` on master.)
+```bash
+test -d src/blocks && echo "LEGACY: ships local engine source"
+grep -q "@k-studio-pro/engine" package.json && echo "LEGACY: depends on engine npm package"
+```
 
-Files NOT in the sync (project-owned, do NOT overwrite):
-- `src/pages/Auth.tsx`, `src/pages/ResetPassword.tsx`, `src/pages/Admin.tsx` — project-specific branding/admin tabs
-- `src/components/admin/**` — project-specific admin panels
+For these projects:
 
-**One-time migration to engine v0.3.0** (only needed once per thin client; idempotent thereafter): the master `AppHeader.tsx` had a hardcoded "Studio Pro" brand label. The engine version accepts `brandTitle` / `brandSubtitle` props with sensible defaults. If a thin client previously customized the brand string in its own `AppHeader.tsx`, the operator must lift that string into wherever `<AppHeader />` is rendered (or pass it via a wrapper). Diff before overwriting; if the only divergence is the brand string, write a thin wrapper instead of the bare shim.
+- **Recommended fix:** **`convert to iframe`** (§8.1). Vastly simpler going forward — every engine fix lands instantly, no `bun update` ritual, no Vite cache busts, no AuthProvider context fragmentation.
+- **If the operator insists on staying on the engine package:** `bun update @k-studio-pro/engine && rm -rf node_modules/.vite`, then hard-refresh. The engine npm package (`@k-studio-pro/engine`, source at `packages/engine/`) is still published to npm on every `packages/engine/package.json` version bump, so this path keeps working — but it's no longer the recommended architecture.
 
-**4. Data layer shims (engine v0.2.0+ — sync from `thin-client-templates/`):**
-- `thin-client-templates/main.tsx` → write to `src/main.tsx` (calls `setSupabaseClient(supabase)` BEFORE `<App />` renders — REQUIRED)
-- `thin-client-templates/src-lib-data-shim.ts` → write to ALL THREE of: `src/lib/siteStore.ts`, `src/lib/imageStore.ts`, `src/lib/exportPersistence.ts` (each is a 1-line `export * from '@k-studio-pro/engine/data'`)
+The detailed per-file sync workflows (`sync everything from master`, `sync AGENTS.md from master`, `migrate to engine package`, etc.) that used to live here are gone. They were always a workaround for the wrong architecture; the iframe model makes them obsolete.
 
-🚨 **One-time migration on engine v0.1.x → v0.2.0:** thin clients that previously had real `src/lib/{siteStore,imageStore,exportPersistence}.ts` files (with their own supabase imports + 374+184+120 LOC) MUST replace them with the 1-line shim above. The actual implementation now lives in `@k-studio-pro/engine/data` and the per-project Supabase client is wired in via `setSupabaseClient(supabase)` in `main.tsx`. Existing imports `from '@/lib/siteStore'` etc. keep working unchanged through the shim. Forgetting the `setSupabaseClient` call in `main.tsx` makes every data-layer call throw "Supabase client not set" on first invocation.
+### 8.6 Recovery: thin client missing the knowledge bundle
 
-**5. Base theme assets (Standard + Pro variants) — DEPRECATED as of engine 0.3.2; zip-loader fixed properly in 0.3.5:**
+A common failure mode: a thin client was converted to iframe but the `knowledge/` folder only has `README.md` (no `AGENTS.md`, no `PRO_CAPABILITIES.md`). The thin-client AI then refuses authoring work because it has zero rules loaded. Fix:
 
-🚨 **Base themes are bundled INSIDE `@k-studio-pro/engine` (since 0.3.2).** Thin clients no longer need `public/base-theme/*.zip` — the engine ships the four zips at `node_modules/@k-studio-pro/engine/base-themes/` and resolves them via Vite `?url` imports.
-
-🚨 **Engine 0.3.5 ships `viteEngineZipPlugin()` with FULL esbuild dep-scan support — REQUIRED.** The `?url` zip imports inside the engine cannot survive Vite's esbuild dep-pre-bundling on their own (esbuild has no `.zip` loader and either crashes the dep-scan or stubs the imports to `""`, leaving `BASE_THEME_URLS` empty and exports broken with `Base theme zip "..." is invalid: Can't find end of central directory`). Engine 0.3.5 fixes this **two ways at once**: a Vite `resolveId`/`load` hook for the main pipeline AND an esbuild plugin auto-injected into `optimizeDeps.esbuildOptions.plugins` for the dep-scan/bundle phase. Result: thin clients keep `@k-studio-pro/engine` in `optimizeDeps.include` (required for React dedupe so AuthProvider context isn't fragmented — see §8.‑1 item 1) AND zip imports work end-to-end. The `thin-client-templates/vite.config.ts` already wires the plugin in — sync that file verbatim.
-
-🚨 **History — engine 0.3.4 was a partial fix.** It registered the plugin only in Vite's main pipeline, missing the esbuild dep-scan phase entirely. Symptom on 0.3.4: exports fail with the "central directory" error whenever the engine is in `optimizeDeps.include` (which it must be, per §8.‑1). The only documented workaround was `optimizeDeps.exclude: ["@k-studio-pro/engine"]` — which silently brought back the AuthProvider context-fragmentation bug. **NEVER add `@k-studio-pro/engine` to `optimizeDeps.exclude` on engine ≥0.3.5.** Bump the engine instead.
-
-🚨🚨 **NEVER "fix" empty `BASE_THEME_URLS` by copying zips to `public/base-theme/` and overriding `BASE_THEME_URLS` at startup.** That hack defeats the entire engine-bundled-zips architecture: the thin client keeps using stale zips on every future engine bump, the operator has to manually re-copy zips on every base-theme update, and the next thin client to hit the underlying bug will redo the same hack. If exports ship a 1-byte/empty/HTML-body zip, or `BASE_THEME_URLS[x]` is `""` at runtime, the cause is **always** missing/outdated `viteEngineZipPlugin()` — re-sync from `thin-client-templates/vite.config.ts` and `bun update @k-studio-pro/engine` to ≥0.3.5.
-
-**Migration order (one-time per thin client):**
-1. `bun update @k-studio-pro/engine` (must land 0.3.5+)
-2. Re-sync `vite.config.ts` from `thin-client-templates/vite.config.ts`
-3. If your `vite.config.ts` has `optimizeDeps.exclude: ["@k-studio-pro/engine"]` from a previous workaround, **REMOVE that line** — it brings back AuthProvider fragmentation
-4. `rm -rf node_modules/.vite` then hard-refresh
-5. Run an export end-to-end, confirm the downloaded zip is well-formed
-6. Then (and only then) delete `public/base-theme/` if it exists
-
-
-**6. ESLint guardrail (prevents the deep-import trailing-slash bug from coming back):**
-- `eslint.config.js`
-
-#### What this sync does NOT touch (intentional — these are auto-managed per-project)
-
-- `src/integrations/supabase/types.ts` — auto-generated from each thin client's own DB
-- `src/integrations/supabase/client.ts` — auto-generated per project
-- `.env`, `supabase/config.toml`, `supabase/migrations/**` — platform-managed
-- `supabase/functions/**` — edge functions are deployed from master, never copied
-- Any file in `packages/engine/` — the engine is consumed via npm, not file-copied (run `bun add @k-studio-pro/engine@latest` after the sync if a fresh engine version exists)
-
-#### How to execute (the FAST procedure)
-
-1. **Batch every file read into ONE parallel tool call.** Use `cross_project--read_project_file` with project `kajabi-studio-max` (ID `4fd872bc-5636-4a8a-bde9-a334a0656f59`) for each file in lists 1–4 + 6 above. Use `cross_project--copy_project_asset` for the 4 base theme zips in list 5 (binaries can't be read as text). Fire all of them in a single message — do NOT serialize. **For the 3 wiring files in list 1**, read from `thin-client-templates/<file>` and WRITE to the bare path (e.g. read `thin-client-templates/vite.config.ts`, write `vite.config.ts`). NEVER read master's root `vite.config.ts` / `tsconfig.app.json` / `package.json` for thin-client sync — those are master's own and will break the thin-client build.
-2. **After every read returns**, batch `code--write` calls in parallel to overwrite the local files. If a read came back "file not found" on master, `rm` the local copy (master deleted it).
-3. **Preserve thin-client branding ONLY in `AppHeader.tsx`** — if the thin client has been rebranded (e.g. "Studio Pro" instead of "Kajabi Studio Max"), diff the strings and keep the thin-client brand label. Everything else: overwrite verbatim.
-4. **Bump the engine package** in one shot:
+1. Confirm `scripts/sync-knowledge.ts` exists. If not, copy it from `thin-client-templates/iframe-app/scripts/sync-knowledge.ts`.
+2. Run the sync script:
    ```bash
-   bun add @k-studio-pro/engine@latest && bun add swiper@latest
+   deno run --allow-read --allow-write --allow-net --allow-env scripts/sync-knowledge.ts
    ```
-5. **Verify the slider/Tabs fix landed** with the diagnostic from the slider memory:
-   ```bash
-   echo "=== engine ===" && cat node_modules/@k-studio-pro/engine/package.json | grep version
-   echo "=== swiper ===" && ls node_modules/swiper/package.json 2>&1
-   echo "=== shadows (must be empty) ===" && ls src/blocks src/engines src/lib/siteDesign src/types 2>&1
-   echo "=== gate ===" && grep -n "enableSlider" node_modules/@k-studio-pro/engine/src/blocks/sections.tsx
-   ```
-6. **Tell the operator** what changed: "Synced N files from master + bumped engine to vX.Y.Z. Hard-refresh to pick everything up."
+3. If the sync reports success but the AI still complains, restart the chat — the AI reads the bundle on chat-start.
 
-#### Why this exists (operator pain point that drove this section)
+If `get-knowledge-bundle-version` returns "no current bundle," master hasn't published one yet — run the publisher script (see §8.2 + `mem://reference/knowledge-bundle-publish-procedure.md`) on master first.
 
-Operators were running `sync AGENTS.md from master` then `sync shell from master` then `sync base themes from master` then asking for a separate engine-wiring sync — 4 separate trigger phrases for what should be one command. **One phrase, one parallel batch, done.** The targeted syncs in §8.7–§8.9 still exist for the rare case where you only want one slice, but `sync everything from master` is the default.
 
-#### Speed targets
-
-- Total wall time: under 60 seconds for the read+write batch (parallelism makes this trivial — ~25 files in flight at once).
-- If you find yourself doing reads sequentially, STOP and re-batch. Sequential reads are the only thing that makes this slow.
-
----
-
-### 8.0 One-time migration: `migrate to engine package` (the proper fix)
-
-When the operator pastes the literal phrase **"migrate to engine package"** (or **"sync to engine package"**, **"thin out this client"**), perform the following one-time migration. After this runs successfully, the thin client never needs §8.1's full file sync again — every engine fix lands via `bun update @k-studio-pro/engine`.
-
-**The problem this solves.** Older thin clients (forked before the engine package existed) carry full local copies of:
-- `src/blocks/` (every block component, exporter, serializer)
-- `src/engines/` (export pipeline, base theme validator)
-- `src/lib/siteDesign/` (renderer, types, blanks, preview helpers)
-
-Their `tsconfig.json` and `vite.config.ts` aliases point `@/blocks`, `@/engines`, `@/lib/siteDesign` at these LOCAL stale files. So when master ships a Tabs fix in engine 0.1.15 and the thin client runs `bun update @k-studio-pro/engine`, the engine code DOES update inside `node_modules` — but every `import { Tabs } from '@/blocks'` in the thin client still resolves to the broken local copy. **`bun update` is a no-op until aliases are repointed.**
-
-**The migration steps (run in order):**
-
-1. **Confirm the engine package is installed and on the latest version:**
-   ```bash
-   bun add @k-studio-pro/engine@latest
-   cat node_modules/@k-studio-pro/engine/package.json | grep '"version"'
-   ```
-   Should report `0.1.16` or higher. Also ensure `swiper` is installed: `bun add swiper`.
-
-2. **Delete the local engine source directories** — these are what's shadowing the npm package. **Nuke the entire `src/types/` folder, not just `assets.ts`/`schemas.ts`** — any leftover file in `src/types/` keeps the `@/types/*` alias resolving locally and silently feeds stale type shapes into the new engine code (most common symptom: Slider props read as `undefined` → silent fallback to 1-up, even though the engine package itself is up to date):
-   ```bash
-   rm -rf src/blocks src/engines src/lib/siteDesign src/types
-   ```
-   Also delete duplicated preview chrome that the engine now exports:
-   ```bash
-   rm -f src/components/SitePreview.tsx
-   ```
-   (The thin client will re-create `src/components/SitePreview.tsx` as a one-line re-export in step 4 — see template below.)
-
-   **Verify after deleting:**
-   ```bash
-   ls src/types src/blocks src/engines src/lib/siteDesign 2>&1 | grep -v "No such"
-   ```
-   Should print nothing. If ANY of those four paths still exist, the migration is incomplete — re-run `rm -rf` until they're gone. A common failure mode is `src/types/` containing a file the operator didn't know about (e.g. a stale `index.ts` barrel) that keeps the alias alive.
-
-3. **Repoint aliases in `tsconfig.json` and `vite.config.ts`** to the engine package instead of local paths. Open `tsconfig.json` (or `tsconfig.app.json`) and replace any `paths` entries for `@/blocks`, `@/engines`, `@/lib/siteDesign`, `@/types/assets`, `@/types/schemas` with:
-   ```json
-   "paths": {
-     "@kajabi-studio/engine": ["./node_modules/@k-studio-pro/engine/src/index.ts"],
-     "@/blocks": ["./node_modules/@k-studio-pro/engine/src/blocks"],
-     "@/blocks/*": ["./node_modules/@k-studio-pro/engine/src/blocks/*"],
-     "@/engines": ["./node_modules/@k-studio-pro/engine/src/engines"],
-     "@/engines/*": ["./node_modules/@k-studio-pro/engine/src/engines/*"],
-     "@/lib/siteDesign": ["./node_modules/@k-studio-pro/engine/src/siteDesign"],
-     "@/lib/siteDesign/*": ["./node_modules/@k-studio-pro/engine/src/siteDesign/*"],
-     "@/types/*": ["./node_modules/@k-studio-pro/engine/src/types/*"],
-     "@/*": ["./src/*"]
-   }
-   ```
-   And in `vite.config.ts`, replace any local-path aliases for these prefixes with the same node_modules paths (use `path.resolve(__dirname, "./node_modules/@k-studio-pro/engine/src/...")`). **Order matters in vite.config.ts** — more-specific aliases (`@/blocks`, `@/engines`, etc.) must come BEFORE the catch-all `@`. Mirror master's vite.config.ts exactly: read it via `cross_project--read_project_file` from project `kajabi-studio-max` (ID `4fd872bc-5636-4a8a-bde9-a334a0656f59`) and copy the `resolve.alias` array verbatim, then overwrite the thin client's `vite.config.ts`.
-
-4. **Re-create the thin re-export shims** (so existing thin-client code that imports `@/components/SitePreview` keeps working):
-   ```ts
-   // src/components/SitePreview.tsx
-   export { SitePreview } from '@k-studio-pro/engine';
-   ```
-
-5. **Verify imports still resolve.** Run `bunx tsc --noEmit` and watch for "cannot find module" errors. Expected: zero errors. If errors appear, they're almost always one of:
-   - A thin client made a local tweak to an engine file (e.g. customized `Tabs.tsx`). The change is now lost — re-apply it as a wrapper component in `src/components/` instead, never by editing engine source.
-   - A path alias was missed in step 3.
-   - An import uses the deep path `@/blocks/components/Foo` where master uses `@/blocks` — replace it with the barrel import.
-
-6. **Verify Vite picks up the change** by hard-refreshing the preview. Sliders should render multi-up; tabs should switch on click.
-
-7. **Tell the operator:** "Migrated to the engine package. Local `src/blocks/`, `src/engines/`, and `src/lib/siteDesign/` deleted; aliases repointed to `@k-studio-pro/engine` (v0.1.X). From now on, run `bun update @k-studio-pro/engine` to pick up every master fix — no more file-by-file syncs."
-
-**What thin clients should still own locally** (do NOT delete these in step 2):
-- `src/pages/` — `SitesDashboard.tsx`, `SiteEditor.tsx`, etc. (per-thin-client UI customization is allowed)
-- `src/components/` — minus `SitePreview.tsx` and any other file that's now a re-export from the engine
-- `src/lib/siteStore.ts`, `src/lib/imageStore.ts` — data layer (uses thin client's own Supabase)
-- `src/integrations/supabase/**` — auto-generated per project
-- `src/App.tsx`, `src/main.tsx`, `src/index.css`, `src/hooks/**` — app shell
-- `public/base-theme/*.zip` — base theme assets are bundled (engine reads them at runtime via fetch)
-
-**When the migration is NOT safe to run:**
-- The thin client has uncommitted local edits to `src/blocks/**`, `src/engines/**`, or `src/lib/siteDesign/**` that the operator hasn't reviewed. Pause, surface the diffs to the operator, get approval to discard.
-- The engine package version installed is older than `0.1.16`. Run step 1 first.
-
-After this migration, **§8.1's full file sync is obsolete for this thin client.** Engine fixes flow via `bun update`. Only §8.7 (landing pages — schema/store layer) and §8.9 (shell — pages/components) remain relevant for non-engine sync needs. §8.8 (base themes) still applies for the `public/base-theme/*.zip` assets.
-
-### 8.1–8.9 — REMOVED (legacy file-by-file sync, dead as of engine 0.3.3+)
-
-The fleet has been fully migrated to the `@k-studio-pro/engine` npm package. Engine fixes propagate via `bun update @k-studio-pro/engine` after a master version bump — there is no longer any reason to file-copy `src/blocks/`, `src/engines/`, `src/lib/siteDesign/`, or shell pages from master into a thin client.
-
-**The only valid sync triggers today:**
-- **`sync everything from master`** (§8.‑1) — the one-phrase full sync: AGENTS.md + PRO_CAPABILITIES.md + thin-client wiring templates + `bun update @k-studio-pro/engine`.
-- **`sync AGENTS.md from master`** — docs only.
-- **`sync PRO_CAPABILITIES.md from master`** — Pro reference only.
-- **`migrate to engine package`** (§8.0) — one-time migration for any legacy thin client still carrying local engine source. After this runs once, `bun update` handles everything.
-
-If an operator pastes any of the old triggers (`sync from master`, `sync shell from master`, `sync base themes from master`, `sync landing pages from master`), interpret them as **`sync everything from master`** and run §8.‑1. Do NOT attempt to re-introduce the per-file workflows that used to live here — they're stale and will overwrite engine code with copies that immediately go out of date on the next master push.
-
----
 
 ## 9. Pro template capabilities (moved out for sync speed)
 

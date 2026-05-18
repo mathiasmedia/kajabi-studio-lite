@@ -13,6 +13,8 @@
 
 export interface KajabiBlock {
   type: string;
+  /** "true" | "false" — block visibility flag (eye-slash toggle in Kajabi editor). */
+  hidden?: string;
   settings: Record<string, unknown>;
 }
 
@@ -141,6 +143,8 @@ export interface ContentSectionProps extends CommonSectionProps {
   sliderSpeed?: number | string;
   sliderLoop?: boolean;
   sliderTransition?: 'slide' | 'fade' | 'cube' | 'coverflow' | 'flip';
+  /** Clamp slide bleed at the section edges → settings.hide_overflow. */
+  hideOverflow?: boolean;
   /** Keep N leading blocks OUTSIDE the slider but inside the section. */
   blockOffsetBefore?: number | string;
   /** Keep N trailing blocks OUTSIDE the slider but inside the section. */
@@ -243,10 +247,24 @@ export interface HeaderSectionProps extends CommonSectionProps {
   mobileMenuTextAlignment?: 'left' | 'center' | 'right';
 
   /**
-   * Pro-only — Full-Time Hamburger: forces the mobile slide-in panel to
-   * also show on desktop. Composes with sticky/overlay.
+   * Pro-only — Full-Time Hamburger / collapsed menu. When true, serializes to
+   * `header_menu_style: "hamburger"` (Pro `streamlined-home-pro/sections/header.liquid`).
+   * On Standard themes Kajabi has no equivalent and the field is dropped.
+   * Back-compat: imports from older Pro exports that used a `collapsed: "true"`
+   * key are normalized to this same prop.
    */
   collapsed?: boolean;
+
+  /** Pro-only — bottom border on header ("yes" | "no") → settings.header_bottom_border */
+  bottomBorder?: 'yes' | 'no';
+  /** Pro-only — bottom border color → settings.header_bottom_border_color */
+  bottomBorderColor?: string;
+  /** Pro-only — collapsed menu (hamburger) text color → settings.hamburger_menu_text_color */
+  hamburgerMenuTextColor?: string;
+  /** Pro-only — collapsed menu background → settings.hamburger_menu_background_color */
+  hamburgerMenuBackgroundColor?: string;
+  /** Pro-only — close button style on collapsed menu → settings.hamburger_menu_close_button_style */
+  hamburgerMenuCloseButtonStyle?: 'dark' | 'light';
 }
 
 /**
@@ -264,6 +282,28 @@ export interface FooterSectionProps extends CommonSectionProps {
   fontSizeDesktop?: string;
   /** Mobile font size keyword → settings.font_size_mobile */
   fontSizeMobile?: string;
+
+  // ---- Pro-only footer fields (silently dropped on Standard themes) ----
+  /** Merge "Powered by Kajabi" into the copyright line → settings.merge_powered_by_with_copyright */
+  mergePoweredByWithCopyright?: boolean;
+  /** Color of the merged copyright/powered-by line → settings.merged_text_color */
+  mergedTextColor?: string;
+  /** Desktop font size for merged line (e.g. "14px") → settings.merged_font_size_desktop */
+  mergedFontSizeDesktop?: string;
+  /** Mobile font size for merged line → settings.merged_font_size_mobile */
+  mergedFontSizeMobile?: string;
+  /** Desktop alignment of merged line → settings.merged_alignment_desktop */
+  mergedAlignmentDesktop?: 'left' | 'center' | 'right';
+  /** Mobile alignment of merged line → settings.merged_alignment_mobile */
+  mergedAlignmentMobile?: 'left' | 'center' | 'right';
+  /** Show top border above merged line → settings.merged_top_border */
+  mergedTopBorder?: boolean;
+  /** Top border color → settings.merged_top_border_color */
+  mergedTopBorderColor?: string;
+  /** Footer bottom padding (desktop, px) → settings.footer_bottom_padding_desktop */
+  footerBottomPaddingDesktop?: number | string;
+  /** Footer bottom padding (mobile, px) → settings.footer_bottom_padding_mobile */
+  footerBottomPaddingMobile?: number | string;
 }
 
 /**

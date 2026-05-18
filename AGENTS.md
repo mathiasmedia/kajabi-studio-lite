@@ -1,3 +1,21 @@
+# Bootstrap: sync knowledge before work
+
+Before doing any substantive work in a new chat/session, first run:
+
+```bash
+deno run -A scripts/sync-knowledge.ts
+```
+
+Then read `knowledge/AGENTS.md` and follow the bundled knowledge instructions.
+
+This root AGENTS.md instruction is required because `knowledge/AGENTS.md` may be stale or incomplete before sync runs. The sync is NOT automatically invoked by the platform — it must run at session start via this instruction.
+
+If the sync fails, report the error clearly before proceeding. Do not silently assume the local knowledge bundle is current.
+
+Do not add a predev script unless you are certain Deno is available in this environment.
+
+---
+
 # Thin Client AI — Read This First
 
 > 🚨 **CRITICAL — DO NOT SKIP. The #1 mistake AI makes in this project:**
