@@ -1,6 +1,6 @@
 {
-  "hash": "9de1a8c122c0baa9",
-  "fileCount": 95,
+  "hash": "e4eab3375e3ca034",
+  "fileCount": 99,
   "files": [
     "AGENTS.md",
     "blocks/types.ts",
@@ -44,6 +44,9 @@
     "mem/reference/bundle-assets-relative-url-extension.md",
     "mem/reference/button-shadow-reset.md",
     "mem/reference/chrome-props-dual-shape-root-fix.md",
+    "mem/reference/clone-card-type-tagging.md",
+    "mem/reference/clone-themesettings-before-html.md",
+    "mem/reference/clone-verbatim-firecrawl-branding.md",
     "mem/reference/dynamic-kajabi-content.md",
     "mem/reference/encore-feature-image-circle-default.md",
     "mem/reference/engine-zip-loader-esbuild-fix.md",
@@ -92,6 +95,7 @@
     "mem/reference/thin-client-token-validation.md",
     "mem/reference/vite-alias-trailing-slash-bug.md",
     "mem/reference/white-on-white-blocks.md",
+    "mem/workflow/clone-approval-gates.md",
     "mem/workflow/site-cloning-playbook.md",
     "mem/workflow/template-build-includes-images.md",
     "mem/workflow/template-dynamic-content-audit.md",
