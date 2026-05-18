@@ -20,7 +20,11 @@ Section-level toggle: `collapsed: true` (a.k.a. "Full-time hamburger menu") forc
 
 ### 9.2 Pro footer (`footer_pro`)
 
-A separate section type that exists alongside the standard footer for back-compat. **Mutual exclusion is author-managed** via per-section visibility toggles — both footers expose `Hide on Desktop` + `Hide on Mobile` fields under their Desktop/Mobile groups. **There is no theme-level "use_pro_footer" switch.** When emitting a Pro site that uses `footer_pro`, the serializer MUST also flip the standard footer's hide-on-desktop + hide-on-mobile to `true` (otherwise both render and the visitor sees two stacked footers).
+A separate section type that exists alongside the standard footer for back-compat. **Mutual exclusion is author-managed** via per-section visibility toggles — both footers expose `Hide on Desktop` + `Hide on Mobile` fields under their Desktop/Mobile groups. **There is no theme-level "use_pro_footer" switch.** When emitting a Pro site that uses `footer_pro`, the serializer MUST also flip the standard footer's hide-on-desktop + hide-on-mobile to `"true"` (otherwise both render and the visitor sees two stacked footers). See **AGENTS §4.35aa** for the literal pre-flight rule + JSON shape.
+
+The editor sidebar (`EditorSidebar.tsx`) shows BOTH `footer_pro` AND `footer` as fixed rows under the page sections on Pro themes (engine 0.6.x+ auto-seeds whichever slot is missing via `ensureGlobalSections` / `embedSharedSections` in `siteDesign/sharedSlots.ts`, wired through `mapRowToSite`). The "re-import the source zip" recovery dance is no longer needed — the missing slot will appear in the sidebar on next load. See AGENTS §4.35.
+
+**Pro footer has NO `logo` block** — its allowlist excludes `logo` even though Standard `footer` accepts it. Use a `text` block (styled `<p>` wordmark) or `image` block (logo image) instead. Verified per-theme allowlist + worked example: AGENTS §4.35e + §4.27 table.
 
 `footer_pro` accepts ALL block types (not just the standard 5). Adds full section-level controls (padding, alignment, border, bg, 12-col grid) and a merged copyright + Powered-by-Kajabi mode.
 
@@ -439,12 +443,12 @@ Per-form overrides: every field above has a per-block override with the same `"i
 **Cascade (lowest → highest priority):**
 1. Kajabi defaults (`font_family_body`, `font_family_heading`, `font_size_h*_desktop`, etc.) — same fields as Standard.
 2. Body overrides (`override_body_fonts: true`) and bold body overrides (`override_bold_body_fonts: true`) → apply to `body, p` / `body strong, p strong`.
-3. **All headings** override (`override_heading_font_styles: true`) → applies to every `h1–h6` (and their `strong` variants).
+3. **All headings** override (`override_heading_font_styles: true`) → applies to every `h1–h6` (and their `strong` variants). 🚨 **Naming asymmetry — easy to get wrong:** the toggle is **singular** (`override_heading_font_styles`) but every child field is **plural** (`select_custom_all_headings_font`, `custom_all_headings_font_weight`, `custom_all_headings_line-height`, `custom_all_headings_letter-spacing`, `custom_all_headings_bottom_margin`). Wrong field name (`select_custom_heading_font` — without `_all_`) is a silent no-op: the Liquid `{% if settings.<wrong_key> %}` is always false, no `font-family` rule emits, h1–h6 keep using Kajabi's default heading font. Verified at `pro-unlocked/snippets/font_override_styles.liquid:78`. **Prefer the all-headings override as the BASELINE** for any sitewide custom font — per-element `override_h<N>_font_styles` only covers the levels you author, every skipped level falls back to the Kajabi default which usually clashes with the chosen primary (most common symptom: `pricing_card` titles, which render as `h4`, look wrong while h1–h3 look right).
 4. **Per-element** override (e.g. `override_h3_font_styles: true`) — beats All headings for that element.
 5. **Bold-per-element** override (e.g. `override_h3_bold_font_styles: true`) — beats per-element for the `strong` variant.
 6. **Block-level** overrides on `cta` / form blocks — beat all template-level button/form settings.
 
-**Standard Style Guide defaults must be honored as fallbacks (preview parity).** When the expert leaves Standard fields like `font_weight_heading`, `line_height_heading`, `font_size_h1_desktop`, `font_size_h1_mobile` (and h2–h6), `font_weight_body`, `line_height_body` empty, Kajabi falls back to **base-theme defaults** (headings 700, h1 48px desktop / 36px mobile, etc.) — NOT to browser UA defaults. The preview engine (`packages/engine/src/siteDesign/resolvePreviewFonts.ts → buildStandardThemeRules`) MUST therefore read each Standard field via `valWithDefault(ts, key)` which falls through to `TEMPLATE_SETTINGS_BY_ID[key].default` from `templateSettingsCatalog.ts`, and emit a CSS rule whenever the resolved value is non-empty. Without this, preview headings collapse to UA `h1 ≈ 32px` while the exported Kajabi site renders 48px — the expert reports "the headings look fine in Kajabi but tiny in the preview" (or vice-versa after they strip an inline `font-size`). Heading weight rules MUST also target `:is(h1..h6) strong` so inline `<strong>` inherits the heading weight instead of body weight. Per-heading desktop+mobile sizes go inside `@media (min-width: 768px)` / `@media (max-width: 767px)` blocks. This is preview-only plumbing; export is unaffected because Kajabi's runtime CSS already handles the fallbacks server-side.
+**Preview parity is automatic in engine 0.4.0+.** The editor preview and dashboard thumbnails render via the **Liquid pipeline** (`packages/engine/src/preview-liquid/`) — it executes the base theme's actual `font_override_styles.liquid` + `block_cta.liquid` + Standard fallback snippets in-browser via a wasm-backed engine. Preview ≡ live Kajabi by construction. The legacy React-side preview-fonts shim (`siteDesign/resolvePreviewFonts.ts → buildStandardThemeRules`, `usePreviewFontInjection`, `useScopedCustomCss`, `scopeCss`) is OBSOLETE and no longer wired into the render path; the file remains in the engine barrel for back-compat but is not consumed. **Do NOT add new logic to it, do NOT reference it in new code, and do NOT cite the retired `mem://reference/preview-respects-pro-custom-fonts.md` memory** (also retired). If the preview shows wrong typography, fix the actual `themeSettings` field IDs (per §9.8c cascade) — the Liquid pipeline reads them directly. AGENTS §4.18 carries the same parity-rule retirement marker for shadows/grid/section-bg.
 
 **Visibility toggles (`hide_if`) — flip them when you emit overrides.** Most override fields have `hide_if: { <toggle_id>: false }`. The toggle controls **whether the field is visible in the Kajabi page builder**, not whether it's emitted. **Whenever you emit any field under a toggle, you MUST also flip the toggle to `true`** — otherwise the expert opens Kajabi and can't see/edit the values you wrote.
 
@@ -525,7 +529,7 @@ Bold variant: `override_h1_bold_font_styles` toggle, then `select_custom_bold_h1
 1. **Template `themeSettings`** (`TemplateDef.themeSettings`) — sitewide defaults via the §9.8a/b/c override system. **Always start here for fonts, headings, buttons, forms.**
 2. **Block-level overrides** on `cta` / form blocks — only when ONE block legitimately needs a variant (e.g. a secondary outline next to a primary solid in the same section).
 3. **`custom_css_class` + `themeSettings.customCss`** (§9.8d) — for genuinely bespoke per-section visual flourishes that the override system can't express (gradients, custom animations, layered backgrounds).
-4. **Inline `style=""` in block HTML** — last resort. Only for content-specific inline decoration (a single `<span>` accent color in a headline, an inline divider) where lifting it to the template would pollute the global cascade.
+4. **Inline `style=""` in block HTML** — near-forbidden last resort. NEVER use it for recurring typography or button styling (headings, ledes, eyebrow systems, paragraph styles, pull quotes, repeated links, CTA styling). If a **specific button** needs customizing, do it on that block's button settings / block props, especially the `cta` block's custom settings. The only acceptable inline use is truly one-off content decoration (a single accented word, a single inline divider, a one-off emphasized phrase) that would be absurd to encode globally. If you ever must choose a one-off inline text color, derive dark/light from the section's **hex background color only** — never from opacity, overlays, or the presence of a background image.
 
 ##### Mandatory pre-flight before saving any styling change
 
@@ -534,18 +538,21 @@ When the expert asks "make the buttons match" / "fix the typography" / "the head
 1. **Audit existing inline CSS first.** `get-site-design` → walk every block → grep block HTML for `style="font-`, `style="line-height`, `style="letter-spacing`, `style="text-transform`, `padding:`, `font-size:`, `font-family:`. **Every match is a candidate for deletion** in favor of a `themeSettings` override.
 2. **Lift recurring inline rules into `themeSettings`.** If you see the same `font-family: 'Playfair Display'` in 6 headings, that belongs in `themeSettings` (`use_custom_fonts: "true"`, `use_primary_custom_font: "true"`, `primary_custom_font_name: "Playfair Display"`, `select_custom_h1_font: "primary"` etc.) — not repeated inline.
 3. **Lift recurring inline button styles into `themeSettings`.** If every CTA carries inline `padding: 16px 32px; text-transform: uppercase; letter-spacing: 2px`, that's the global button system speaking — set `view_advanced_button_customizations: "true"`, `btn_uppercase: "on"`, `btn_letter-spacing: "2px"`, `button_vertical_padding: "16px"`, `button_horizontal_padding: "32px"`. Then **delete the inline declarations**.
-4. **Match the dark/light pair model (§9.8a).** Pick the brand pair ONCE (`btn_background_color` = dark member, `btn_text_color` = light member). Per-CTA, set `btn_type: "dark"` or `"light"` to choose which one renders. Don't set per-block `buttonBackgroundColor` / `buttonTextColor` unless the block genuinely uses an off-brand color.
-5. **Use the value-formats memory.** Every `custom_*` / `btn_*` / `form_input_*` field is enum-validated. See `mem://reference/pro-custom-fonts-value-formats.md` (master) — bare numbers (`"42"`), `em` values (`"-0.02em"`), and gap values (`"13px"`, `"15px"`) are silently rejected. Always emit `"Npx"` strings on the documented px grid, unitless decimals on the 0.1 line-height grid, the 5px-grid for margins, and `"primary"`/`"accent"`/`"inherit"` (literal strings) for font slot pickers.
-6. **Whenever you set any override field, flip its `hide_if` toggle to `"true"`** (§9.8c table) — otherwise the field is invisible in Kajabi's editor and the expert can't tweak it.
-7. **Use `"inherit"` (literal string) for every override you DON'T want to change.** Never `""`, never omit. Empty string produces `font-weight: ;` — broken CSS that breaks the rendered page.
-8. **Mind the hyphen-in-ID fields:** `custom_h*_line-height`, `custom_h*_letter-spacing`, `custom_body_font_line-height`, `custom_body_font_letter-spacing`, `custom_body_button_line-height`, `btn_letter-spacing`, `form_input_line-height`, `form_input_letter-spacing`. Snake_case versions (`custom_h1_line_height`) are silently dropped.
-9. **Verify the preview matches.** The editor preview honors `themeSettings` overrides (see `mem://feature/preview-respects-pro-custom-fonts.md`). After changes, a refresh should show the new typography/buttons in the preview — if not, you likely emitted an invalid value or forgot the visibility toggle.
+4. **For specific button exceptions, use block settings — not inline HTML.** If one hero button, footer CTA, or card CTA must differ, use the block's real button fields (`btn_type`, `buttonStyle`, `buttonBackgroundColor`, `buttonTextColor`, radius/size overrides, etc.). On `cta` blocks, the custom settings are the intended override layer.
+5. **Match the dark/light pair model (§9.8a).** Pick the brand pair ONCE (`btn_background_color` = dark member, `btn_text_color` = light member). Per-CTA, set `btn_type: "dark"` or `"light"` to choose which one renders. Don't set per-block `buttonBackgroundColor` / `buttonTextColor` unless the block genuinely uses an off-brand color.
+6. **Use the value-formats memory.** Every `custom_*` / `btn_*` / `form_input_*` field is enum-validated. See `mem://reference/pro-custom-fonts-value-formats.md` (master) — bare numbers (`"42"`), `em` values (`"-0.02em"`), and gap values (`"13px"`, `"15px"`) are silently rejected. Always emit `"Npx"` strings on the documented px grid, unitless decimals on the 0.1 line-height grid, the 5px-grid for margins, and `"primary"`/`"accent"`/`"inherit"` (literal strings) for font slot pickers.
+7. **Whenever you set any override field, flip its `hide_if` toggle to `"true"`** (§9.8c table) — otherwise the field is invisible in Kajabi's editor and the expert can't tweak it.
+8. **Use `"inherit"` (literal string) for every override you DON'T want to change.** Never `""`, never omit. Empty string produces `font-weight: ;` — broken CSS that breaks the rendered page.
+9. **Mind the hyphen-in-ID fields:** `custom_h*_line-height`, `custom_h*_letter-spacing`, `custom_body_font_line-height`, `custom_body_font_letter-spacing`, `custom_body_button_line-height`, `btn_letter-spacing`, `form_input_line-height`, `form_input_letter-spacing`. Snake_case versions (`custom_h1_line_height`) are silently dropped.
+10. **Verify the preview matches.** The editor preview is rendered by the actual base-theme Liquid (engine 0.4.0+), so any valid `themeSettings` override appears in the preview the moment you save. If a refresh shows no change, the cause is almost always (a) an invented field ID — see §9.8f — (b) a forgotten `hide_if` visibility toggle, (c) `""` instead of `"inherit"`, or (d) a snake_case key where Pro expects a hyphen (`*_line-height`, `*_letter-spacing`).
 
 ##### Anti-patterns (delete these on sight)
 
 ❌ **Inline font-family on every heading** instead of `select_custom_h*_font: "primary"`.
 ❌ **Inline `padding`, `text-transform`, `letter-spacing` on every `<a class="button">`** instead of the global `btn_*` system.
 ❌ **Inline `line-height: 1.05`** on h1s instead of `custom_h1_line-height: "1.0"` (snapped to the 0.1 grid).
+❌ **Inline-styled eyebrow / lede / pull-quote systems** instead of Style Guide typography plus the smallest justified `customCss` exception.
+❌ **Customizing a specific button in inline HTML or sitewide `customCss`** instead of the block's own button settings.
 ❌ **Per-CTA `buttonBackgroundColor` set to the same brand value on every CTA** instead of one global `btn_background_color` + per-CTA `btn_type: "dark"`.
 ❌ **Setting numeric overrides as bare numbers** (`custom_h1_font_size_desktop: "42"`) — must be `"42px"`.
 ❌ **Setting overrides as `em`** (`btn_letter-spacing: "0.18em"`) — must be `"Npx"` clamped to `[-2px, 2px]`.
@@ -588,7 +595,24 @@ Fix:
 
 The key insight: **inline CSS is the symptom of a missed template-level control.** Almost every typography/button rule belongs in `themeSettings`. Reach for inline styles only for true one-off content decoration.
 
+#### 9.8f 🚨 NEVER INVENT SCHEMA FIELD IDS — verify EVERY themeSettings/section/block field against the parsed schema BEFORE saving
+
+🚨 **Mirrors AGENTS §4.26a — applies with extra force on Pro `themeSettings`** because Pro adds ~50 fields to the Style Guide and the names are non-obvious. Verified failure mode (Ascend site Style Guide, 2026-05-08): authoring `primary_font_link`, `primary_font_family`, `accent_font_link`, `accent_font_family` — **none exist** in `streamlined-home-pro/config/settings_schema.json`. `update-site-design` returned 200, the JSON contained the keys, but the Style Guide UI stayed blank because the REAL fields (`use_custom_fonts`, `font_stylesheet_links`, `use_primary_custom_font`, `primary_custom_font_name`, `primary_custom_font_fallback`, `use_accent_custom_font`, `accent_custom_font_name`, `accent_custom_font_fallback` — see §9.8c) were never written.
+
+**The rule — for EVERY `themeSettings` / section-settings / block-field write on a Pro site:**
+
+1. **Verify the field ID exists in the base theme's parsed schema BEFORE saving.** Sources of truth, in order:
+   - `packages/engine/src/engines/schemaRegistry.ts` / `schemas.generated.json` (parsed `{% schema %}` from each base theme)
+   - This document's §9.8a (buttons), §9.8b (forms), §9.8c (custom fonts) value tables
+   - `mem://reference/pro-custom-fonts.md` + `mem://reference/pro-custom-fonts-value-formats.md` (master) — deep field reference
+   - The base theme zip's `config/settings_schema.json` directly — extract via `unzip <base-theme>.zip config/settings_schema.json -d /tmp/` if the registry doesn't have what you need
+2. **Never guess by analogy.** "primary_font_link sounds right because it's a font link" → wrong. Pro's actual field is `font_stylesheet_links` (a textarea holding raw `<link>` HTML for ALL fonts together) — nothing like the made-up name.
+3. **200 OK is NOT validation.** The save succeeded means "we wrote your JSON to the row." It does NOT mean "the fields you wrote are real." Only the rendered Style Guide / live Kajabi proves the fields took effect.
+
+**Pre-flight on every `themeSettings` or styling write:** list every field ID you're about to set. For each one, confirm it appears in `schemas.generated.json` (or the §9.8 tables above). If any field can't be found, it's invented — find the real name before saving. Symptom: "saved themeSettings, refreshed editor, Style Guide is still blank" → open `schemas.generated.json` and grep for each key you wrote. Any miss = the bug. See `mem://reference/never-invent-schema-field-ids.md` (master).
+
 ### 9.9 Pro-only block snippets
+
 
 All Pro-only blocks below are now wired into the React block library and engine — exporters, preview renderer, field schema, and `ALLOWED_BLOCKS_PER_SECTION` set all recognize them. Use them only on Pro sites (`base_theme: streamlined-home-pro` | `encore-page-pro`); they're silently dropped on Standard.
 
@@ -618,7 +642,7 @@ Layout switches set via section settings (not new block types):
 
 `sections/section.liquid` in Pro adds ~50 new fields:
 - **Animation**: `animation_type`, `animation_duration`, `animation_delay`, `animation_offset`.
-- **Slider** (§9.3): `enable_slider`, `slider_autoplay`, `slider_speed`, `slider_dots`, `slider_arrows`, `slider_infinite`, `slides_to_show_*`, `block_offset_before`, `block_offset_after`, plus arrow/dot positioning.
+- **Slider** (§9.3): `enable_slider`, `slider_autoplay`, `slider_speed`, `slider_dots`, `slider_arrows`, `slider_infinite`, `slides_to_show_*`, `block_offset`, `block_end_offset` (NOT `block_offset_before`/`_after` — see §9.3 for verified IDs), plus arrow/dot positioning.
 - **Columns** (§9.4): `columns`, `column_widths`, `column_gap`, per-block `column`.
 - **Tabs** (§9.5): `use_as_tab`, `tab_slug`, `default_tab`.
 - **Advanced borders**: per-side `border_top_*`, `border_right_*`, `border_bottom_*`, `border_left_*`.
@@ -626,7 +650,7 @@ Layout switches set via section settings (not new block types):
 - **Background video**: `bg_video_loop`, `bg_video_muted`, `bg_video_autoplay`, `bg_video_overlay_color`, `bg_video_overlay_opacity`.
 - **Spacing precision**: per-breakpoint padding/margin.
 
-To add support: extend `kajabiFieldSchema.ts` SECTION schema (mark new fields `proOnly: true`), extend `Section`/`ContentSection` React props, gate in `serialize.ts` so they only emit when the export target is a `-pro` theme.
+To add support: re-run the schema-registry generator against the updated base-theme zip so `schemaRegistry.ts` picks up the new fields, extend `Section`/`ContentSection` React props, and gate in `serialize.ts` so they only emit when the export target is a `-pro` theme.
 
 ### 9.13 Adding new Pro blocks (procedure)
 
@@ -635,7 +659,39 @@ All Pro snippets currently shipped by Kajabi are wired (see §9.9). If Kajabi ad
 1. Create `packages/engine/src/blocks/components/<BlockName>.tsx` matching the Liquid output.
 2. Export it from `packages/engine/src/blocks/index.ts`.
 3. Register it in the `BLOCK_COMPONENTS` map in `packages/engine/src/siteDesign/render.tsx`.
-4. Add a field schema entry in `packages/engine/src/engines/kajabiFieldSchema.ts` (`BLOCK_FIELD_SCHEMAS` map).
-5. Add the `kajabiType` string to the appropriate `ALLOWED_BLOCKS_PER_SECTION` set.
-6. Bump `packages/engine/package.json` version → thin clients pick it up via `bun update @k-studio-pro/engine`.
+4. Drop the updated base-theme zip into the engine and regenerate `schemaRegistry.ts` — the new block + its fields are picked up automatically from the parsed `{% schema %}`.
+5. Deploy master. Iframe thin clients pick up the new block on next page load (no `bun update`, no thin-client sync — they iframe master directly per AGENTS §8). Legacy engine-package thin clients still need `bun update @k-studio-pro/engine` after a `packages/engine/package.json` version bump.
+6. Republish the knowledge bundle if any rule changed (see AGENTS §8.2) so authoring-AI rules stay in sync.
 
+### 9.14 Schema-driven editor + dual-shape props (engine 0.4.x – 0.6.10+)
+
+> Mirror of AGENTS §4.29 — repeated here because every Pro authoring decision touches it.
+
+The block field editor (`packages/engine/src/shell/components/EditorSidebar.tsx` + `BlockFieldForm`) is **registry-driven**. It reads each block's allowed fields from `schemaRegistry.ts` (parsed from each base-theme `{% schema %}`) and renders inputs for EVERY field the schema declares — including every Pro-only field listed in §9.8a/b/c/d and §9.12. Three consequences for Pro authoring:
+
+1. **Author-wins export (Phase B3).** Whatever the editor writes reaches Kajabi. The serializer consults the registry as a 2nd-opinion allowlist; **registry-only blocks** (e.g. `dropdown` / `user` / `hello_bar` in headers, every Pro `footer_pro` block in §9.2's expanded set) survive to `settings_data.json` instead of being silent-dropped by a stale React allowlist. The hard-coded shortlist in `sections.tsx` is a fast-path fallback only. Always pass `baseTheme` to `serializeTree({ baseTheme })` — without it, Pro-only blocks fall back to the Standard shortlist and disappear on export.
+
+2. **Dual-shape storage is intentional.** First-class blocks (`text`, `cta`, `feature`, `pricing_card`, `image`, `logo`) save with BOTH camelCase and snake_case keys coexisting. The editor writes snake_case (Kajabi schema names) for any field without a `.deserialize()` alias on the block; the block's React component reads camelCase. **Do NOT "normalize" or rewrite block JSON to one shape** — both round-trip correctly. AI-authored JSON via `update-site-design` should still prefer the camelCase canonical names per §4.26 (avoids needing a `readField` retrofit later).
+
+3. **The render-time gap is closed by `readField`.** When a block component needs a prop that has a snake_case schema sibling, use the engine helper:
+   ```ts
+   import { readField } from '@k-studio-pro/engine';
+   const bg = readField<string>(props, 'buttonBackgroundColor', 'btn_background_color');
+   const label = readField<string>(props, 'label', 'buttonText', 'btn_text');
+   ```
+   Apply on demand per-block (don't pre-emptively retrofit every component). Symptom that you need it: "I changed this field in the editor on a Pro site, save returned 200 OK, but the preview ignores it." See `mem://feature/readfield-dual-shape-reader.md` (master).
+
+### 9.15 Chrome-props dual-shape root fix + section passthrough already-emitted guard
+
+> Engine maintainer rules. Mirror of AGENTS §4.25 — repeated here because Pro adds many block-level chrome overrides that hit this code path.
+
+**Chrome-props dual-shape (engine 0.6.25+).** `packages/engine/src/blocks/blockChrome.ts` exports `normalizeChromeProps()` that bridges snake_case → camelCase for `padding` / `margin` / `backgroundColor` / `borderRadius` / `boxShadow` / `border` BEFORE serialize/style read. This kills the "edited a chrome field, save 200 OK, preview ignored it" bug class for EVERY block at once — including every Pro-only block in §9.9. **Replaces the old per-block `aliasXProps` hacks** that used to live in each block's `serialize.ts`. Keep `CHROME_ALIASES` (in `propAliases.ts`) and `normalizeChromeProps` in sync — adding a new chrome key requires updating both.
+
+**Section passthrough already-emitted guard (engine 0.6.47+).** The section registry passthrough in `serialize.ts` skips ANY snake_case key that `buildSectionSettings` already wrote — no SNAKE_TO_CAMEL skip-map needed. Kills the "imported `__rawSettings` overwrites freshly-serialized `header_menu_style` / `bg_image` / `full_width`" bug class structurally. **Adding a new derived section field = update `buildSectionSettings` only** (the passthrough guard auto-skips the snake_case sibling).
+
+**Audit script — run after editing any block's `.serialize` OR after regenerating the schema registry:**
+```bash
+deno run -A scripts/audit-block-schema-drift.ts
+# or: bun run audit:schema
+```
+Prints every field a serializer emits that isn't in the matching parsed-schema allowlist. For each row, decide: (a) add to schema (silent-drop bug — most common), (b) remove from `.serialize` (not a real Kajabi field), or (c) document as intentionally local-only. **Re-run until clean before bumping `packages/engine/package.json`.**
