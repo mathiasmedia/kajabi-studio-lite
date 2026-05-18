@@ -743,7 +743,7 @@ When a card-style block (`feature`, `pricing_card`, etc.) needs an "Explore →"
 
 **Why this rule is so loud:** this is the #1 most repeated complaint in the project's history. Experts have asked "make the images bigger" 3, 4, 5 times in a row in the same session because the AI keeps bumping the value from `100` to `160` to `200` instead of jumping straight to `"1200"`. **There is no middle ground for card photos. Either it's an icon (≤120px) or it's a photo (default `"1200"`). Nothing in between.** And there is NO downside to `"1200"` on a smaller card — `width: 100%` clamps it to the card's actual width.
 
-**Why this exists technically:** the `feature` block was originally designed as a "feature bullet" pattern (icon + text), and the 80px default reflects that. It's now overloaded as the canonical "card with photo" block too, but the default never moved. Verified in `node_modules/@k-studio-pro/engine/src/blocks/components/Feature.tsx`: when `imageWidth` is set, the image gets `style={{ width: '100%', maxWidth: '${imageWidth}px' }}`; when omitted, it gets a flat `style={{ width: '80px' }}`. Until we ship a separate `service_card` block or change the default, **the AI must override `imageWidth` to a large pixel value (default `"1200"`) on every photo-bearing card.**
+**Why this exists technically:** the `feature` block was originally designed as a "feature bullet" pattern (icon + text), and the 80px default reflects that. It's now overloaded as the canonical "card with photo" block too, but the default never moved. Verified in `packages/engine/src/blocks/components/Feature.tsx` (master source of truth; legacy engine-package thin clients see the same code at `node_modules/@k-studio-pro/engine/src/blocks/components/Feature.tsx` — iframe thin clients inherit via master): when `imageWidth` is set, the image gets `style={{ width: '100%', maxWidth: '${imageWidth}px' }}`; when omitted, it gets a flat `style={{ width: '80px' }}`. Until we ship a separate `service_card` block or change the default, **the AI must override `imageWidth` to a large pixel value (default `"1200"`) on every photo-bearing card.**
 
 ---
 
@@ -1042,7 +1042,7 @@ Every brutal clone session in the project history followed the same anti-pattern
 
 **The rule — every time you author or edit a block:**
 
-1. **Before writing the props object, READ THE BLOCK'S COMPONENT FILE** in the engine to confirm the exact `*Props` interface field names. Source of truth lives at `node_modules/@k-studio-pro/engine/src/blocks/components/<BlockName>.tsx` (thin clients) or `packages/engine/src/blocks/components/<BlockName>.tsx` (master). One `code--view` call per block type you're touching. **Do not guess prop names from "what would make sense"** — every block has a specific schema and the conventions vary (some use `name`, some use `title`, some use `label`, some use `heading`).
+1. **Before writing the props object, READ THE BLOCK'S COMPONENT FILE** in the engine to confirm the exact `*Props` interface field names. Source of truth lives at `packages/engine/src/blocks/components/<BlockName>.tsx` (master — canonical). Iframe thin clients (the canonical architecture per §8) don't have local engine source — read from master via `cross_project--read_project_file` if needed, or just rely on the bundled `knowledge/blocks/types.ts`. Legacy engine-package thin clients (deprecated, see §8.5) can still read `node_modules/@k-studio-pro/engine/src/blocks/components/<BlockName>.tsx`. One `code--view` call per block type you're touching. **Do not guess prop names from "what would make sense"** — every block has a specific schema and the conventions vary (some use `name`, some use `title`, some use `label`, some use `heading`).
 2. **Cross-check against `mem://reference/block-field-catalog.md`** for the canonical per-block field list. If the block isn't in the catalog yet, read the source and add it.
 3. **Never assume a "natural" name works.** `title`/`description`/`featured` feel obvious — they're wrong on `pricing_card`. `text`/`url`/`label` feel obvious — they're right on `cta`. The only way to know is to check the source.
 
@@ -2343,7 +2343,7 @@ Then copy the **whole** `thin-client-templates/iframe-app/` directory into the p
 Then `bun install` and run the knowledge sync once:
 
 ```bash
-deno run --allow-read --allow-write --allow-net --allow-env scripts/sync-knowledge.ts
+deno run --allow-read --allow-write --allow-net --allow-env --node-modules-dir=auto scripts/sync-knowledge.ts
 ```
 
 The expert's sites/data are unaffected — they live in master's database, tied to the expert's `auth.uid()`.
@@ -2361,7 +2361,7 @@ Thin clients call `get-knowledge-bundle-version` on every chat-start, compare th
 If the operator pastes `sync knowledge` in a thin client, run the sync script manually:
 
 ```bash
-deno run --allow-read --allow-write --allow-net --allow-env scripts/sync-knowledge.ts
+deno run --allow-read --allow-write --allow-net --allow-env --node-modules-dir=auto scripts/sync-knowledge.ts
 ```
 
 This is rarely needed because thin-client AIs run it automatically on chat-start. Useful only if the operator just published a new bundle and wants to confirm the thin client picked it up before testing.
@@ -2396,7 +2396,7 @@ A common failure mode: a thin client was converted to iframe but the `knowledge/
 1. Confirm `scripts/sync-knowledge.ts` exists. If not, copy it from `thin-client-templates/iframe-app/scripts/sync-knowledge.ts`.
 2. Run the sync script:
    ```bash
-   deno run --allow-read --allow-write --allow-net --allow-env scripts/sync-knowledge.ts
+   deno run --allow-read --allow-write --allow-net --allow-env --node-modules-dir=auto scripts/sync-knowledge.ts
    ```
 3. If the sync reports success but the AI still complains, restart the chat — the AI reads the bundle on chat-start.
 
